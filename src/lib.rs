@@ -13,6 +13,8 @@
 //! for single-threaded use cases if reallocation is too expensive (say, tens to hundreds of MB).
 //! However, it's probably easier to use something like [`Vec::with_capacity`] in that case.
 //!
+//! See also [the `vec` module] for an implementation of a concurrent vector.
+//!
 //! # Reserving
 //!
 //! Reserving memory involves allocating a range of virtual address space, such that other
@@ -61,6 +63,7 @@
 //!
 //! [reserve]: self#reserving
 //! [committing]: self#committing
+//! [the `vec` module]: self::vec
 //! [prefaulted]: self#prefaulting
 
 #![allow(
