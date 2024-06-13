@@ -554,14 +554,13 @@ impl<T> IntoIterator for Vec<T> {
 
         let start = this.as_mut_ptr();
 
-        let len = *this.len.get_mut();
         let end = if T::IS_ZST {
-            start.cast::<u8>().wrapping_add(len).cast::<T>()
+            start.cast::<u8>().wrapping_add(this.len_mut()).cast::<T>()
         } else {
             // SAFETY: The modifier of `self.len` ensures that it is only done after writing the new
             // elements and that said writes have been synchronized. The ownership ensures
             // synchronization in this case.
-            unsafe { start.add(len) }
+            unsafe { start.add(this.len_mut()) }
         };
 
         IntoIter {
