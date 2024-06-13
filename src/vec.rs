@@ -2,6 +2,7 @@
 
 use self::TryReserveErrorKind::{AllocError, CapacityOverflow};
 use super::{align_up, page_size, Allocation};
+use crate::addr;
 use alloc::borrow::Cow;
 use core::{
     borrow::{Borrow, BorrowMut},
@@ -17,7 +18,7 @@ use core::{
         Ordering::{Acquire, Relaxed, Release},
     },
 };
-use std::{error::Error, io, sync::Mutex};
+use std::{error::Error, io, iter::FusedIterator, mem::ManuallyDrop, sync::Mutex};
 
 /// A concurrent, in-place growable vector.
 ///
@@ -538,6 +539,40 @@ impl<'a, T> IntoIterator for &'a mut Vec<T> {
     }
 }
 
+impl<T> IntoIterator for Vec<T> {
+    type Item = T;
+
+    type IntoIter = IntoIter<T>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        let mut this = ManuallyDrop::new(self);
+
+        // SAFETY: `this` is wrapped in a `ManuallyDrop` such that a double-free can't happen, even
+        // if a panic was possible below.
+        let allocation = unsafe { ptr::read(&this.allocation) };
+
+        let start = this.as_mut_ptr();
+
+        let len = *this.len.get_mut();
+        let end = if T::IS_ZST {
+            start.cast::<u8>().wrapping_add(len).cast::<T>()
+        } else {
+            // SAFETY: The modifier of `self.len` ensures that it is only done after writing the new
+            // elements and that said writes have been synchronized. The ownership ensures
+            // synchronization in this case.
+            unsafe { start.add(len) }
+        };
+
+        IntoIter {
+            _allocation: allocation,
+            start,
+            end,
+            marker: PhantomData,
+        }
+    }
+}
+
 impl<T: PartialOrd> PartialOrd for Vec<T> {
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
@@ -549,6 +584,109 @@ impl<T: Ord> Ord for Vec<T> {
     #[inline]
     fn cmp(&self, other: &Self) -> cmp::Ordering {
         Ord::cmp(&**self, &**other)
+    }
+}
+
+/// An iterator that moves out of a vector.
+///
+/// This struct is created by the [`into_iter`] method on [`Vec`].
+///
+/// [`into_iter`]: struct.Vec.html#method.into_iter-1
+pub struct IntoIter<T> {
+    _allocation: Allocation,
+    start: *mut T,
+    end: *mut T,
+    marker: PhantomData<T>,
+}
+
+impl<T> Iterator for IntoIter<T> {
+    type Item = T;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.start == self.end {
+            return None;
+        }
+
+        let ptr = if T::IS_ZST {
+            self.end = self.end.cast::<u8>().wrapping_sub(1).cast::<T>();
+
+            self.start
+        } else {
+            let old = self.start;
+
+            // SAFETY: We checked that there are still elements remaining above.
+            self.start = unsafe { old.add(1) };
+
+            old
+        };
+
+        // SAFETY: We own the collection, and have just incremented the `start` pointer such that
+        // this element can't be accessed again.
+        Some(unsafe { ptr.read() })
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.len();
+
+        (len, Some(len))
+    }
+
+    #[inline]
+    fn count(self) -> usize {
+        self.len()
+    }
+}
+
+impl<T> DoubleEndedIterator for IntoIter<T> {
+    #[inline]
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.start == self.end {
+            return None;
+        }
+
+        let ptr = if T::IS_ZST {
+            self.end = self.end.cast::<u8>().wrapping_sub(1).cast::<T>();
+
+            self.start
+        } else {
+            // SAFETY: We checked that there are still elements remaining above.
+            self.end = unsafe { self.end.sub(1) };
+
+            self.end
+        };
+
+        // SAFETY: We own the collection, and have just decremented the `end` pointer such that
+        // this element can't be accessed again.
+        Some(unsafe { ptr.read() })
+    }
+}
+
+impl<T> ExactSizeIterator for IntoIter<T> {
+    #[inline]
+    fn len(&self) -> usize {
+        if T::IS_ZST {
+            addr(self.end.cast()).wrapping_sub(addr(self.start.cast()))
+        } else {
+            // SAFETY:
+            // * `start` and `end` were both created from the same object in `Vec::into_iter`.
+            // * `Vec::new` ensures that the allocation size doesn't exceed `isize::MAX` bytes.
+            // * We know that the allocation doesn't wrap around the address space.
+            unsafe { self.end.offset_from(self.start) as usize }
+        }
+    }
+}
+
+impl<T> FusedIterator for IntoIter<T> {}
+
+impl<T> Drop for IntoIter<T> {
+    fn drop(&mut self) {
+        let elements = ptr::slice_from_raw_parts_mut(self.start, self.len());
+
+        // SAFETY: We own the collection, and it is being dropped which ensures that the elements
+        // can't be accessed again.
+        unsafe { elements.drop_in_place() };
     }
 }
 
