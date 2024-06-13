@@ -8,6 +8,7 @@ use core::{
     borrow::{Borrow, BorrowMut},
     cmp, fmt,
     hash::{Hash, Hasher},
+    hint,
     marker::PhantomData,
     mem,
     ops::{Deref, DerefMut, Index, IndexMut},
@@ -18,19 +19,19 @@ use core::{
         Ordering::{Acquire, Relaxed, Release},
     },
 };
-use std::{error::Error, io, iter::FusedIterator, mem::ManuallyDrop, sync::Mutex};
+use std::{error::Error, io, iter::FusedIterator, mem::ManuallyDrop};
 
 /// A concurrent, in-place growable vector.
 ///
 /// This type behaves identically to the standard library `Vec` except that it is guaranteed to
-/// never reallocate, and as such can support concurrent reads while also supporting growth.
-/// However, growth is not concurrent. There can be at most one writer.
+/// never reallocate, and as such can support concurrent reads while also supporting growth. All
+/// operations are lock-free.
 pub struct Vec<T> {
     allocation: Allocation,
     max_capacity: usize,
     capacity: AtomicUsize,
     len: AtomicUsize,
-    len_lock: Mutex<()>,
+    reserved_len: AtomicUsize,
     marker: PhantomData<T>,
 }
 
@@ -94,7 +95,7 @@ impl<T> Vec<T> {
             max_capacity,
             capacity: AtomicUsize::new(0),
             len: AtomicUsize::new(0),
-            len_lock: Mutex::new(()),
+            reserved_len: AtomicUsize::new(0),
             marker: PhantomData,
         })
     }
@@ -116,7 +117,7 @@ impl<T> Vec<T> {
             max_capacity,
             capacity: AtomicUsize::new(0),
             len: AtomicUsize::new(0),
-            len_lock: Mutex::new(()),
+            reserved_len: AtomicUsize::new(0),
             marker: PhantomData,
         }
     }
@@ -204,24 +205,52 @@ impl<T> Vec<T> {
     /// Appends an element to the end of the vector. Returns the index of the inserted element.
     #[inline]
     pub fn push(&self, value: T) -> usize {
-        let _len_guard = match self.len_lock.lock() {
-            Ok(guard) => guard,
-            Err(err) => err.into_inner(),
-        };
+        if T::IS_ZST {
+            let mut len = self.len();
 
-        let len = self.len();
+            loop {
+                if len == usize::MAX {
+                    capacity_overflow();
+                }
 
-        if len >= self.capacity() {
-            self.reserve_for_push();
+                match self.len.compare_exchange(len, len + 1, Relaxed, Relaxed) {
+                    Ok(_) => return len,
+                    Err(new_len) => len = new_len,
+                }
+            }
         }
 
-        // SAFETY: We made sure the index is in bounds above. We hold a lock on the length, which
-        // means that no other threads can be attempting to write to this same index.
-        unsafe { self.as_ptr().cast_mut().add(len).write(value) };
+        // This cannot overflow because our capacity can never exceed `isize::MAX` bytes, and
+        // because `self.reserve_for_push()` resets `self.reserved_len` back to `self.max_capacity`
+        // if it was overshot.
+        let reserved_len = self.reserved_len.fetch_add(1, Relaxed);
 
-        // SAFETY: We have written the element, and synchronize said write with any future readers
-        // by using the `Release` ordering.
-        unsafe { self.len.store(len + 1, Release) };
+        if reserved_len >= self.capacity() {
+            self.reserve_for_push(reserved_len);
+        }
+
+        // SAFETY: We made sure that the index is in bounds above. We reserved an index by
+        // incrementing `self.reserved_len`, which means that no other threads can be attempting to
+        // write to this same index.
+        unsafe { self.as_ptr().cast_mut().add(reserved_len).write(value) };
+
+        let mut len = self.len();
+        let mut backoff = Backoff::new();
+
+        loop {
+            // SAFETY: We have written the element, and synchronize said write with any future
+            // readers by using the `Release` ordering.
+            match unsafe {
+                self.len
+                    .compare_exchange_weak(len, reserved_len + 1, Release, Relaxed)
+            } {
+                Ok(_) => break,
+                Err(new_len) => {
+                    len = new_len;
+                    backoff.spin();
+                }
+            }
+        }
 
         len
     }
@@ -232,7 +261,7 @@ impl<T> Vec<T> {
         let len = self.len_mut();
 
         if len >= self.capacity_mut() {
-            self.reserve_for_push();
+            self.reserve_for_push(len);
         }
 
         // SAFETY: We made sure the index is in bounds above.
@@ -245,21 +274,25 @@ impl<T> Vec<T> {
     }
 
     #[inline(never)]
-    fn reserve_for_push(&self) {
-        handle_reserve(self.grow_amortized(1));
+    fn reserve_for_push(&self, len: usize) {
+        handle_reserve(self.grow_amortized(len, 1));
     }
 
     // TODO: What's there to amortize over? It should be linear growth.
-    fn grow_amortized(&self, additional: usize) -> Result<(), TryReserveError> {
+    fn grow_amortized(&self, len: usize, additional: usize) -> Result<(), TryReserveError> {
         debug_assert!(additional > 0);
 
         if T::IS_ZST {
             return Err(CapacityOverflow.into());
         }
 
-        let required_capacity = self.len().checked_add(additional).ok_or(CapacityOverflow)?;
+        let required_capacity = len.checked_add(additional).ok_or(CapacityOverflow)?;
 
         if required_capacity > self.max_capacity {
+            if self.reserved_len.load(Relaxed) > self.max_capacity {
+                self.reserved_len.store(self.max_capacity, Relaxed);
+            }
+
             return Err(CapacityOverflow.into());
         }
 
@@ -285,6 +318,11 @@ fn grow(
 ) -> Result<(), TryReserveError> {
     let old_capacity = capacity.load(Relaxed);
 
+    if old_capacity == new_capacity {
+        // Another thread beat us to it.
+        return Ok(());
+    }
+
     let page_size = page_size();
 
     let old_size = old_capacity * element_size;
@@ -305,7 +343,10 @@ fn grow(
 
     let _ = allocation.prefault(ptr, size);
 
-    capacity.store(new_capacity, Relaxed);
+    if let Err(capacity) = capacity.compare_exchange(old_capacity, new_capacity, Relaxed, Relaxed) {
+        // We lost the race, but the winner must have updated the capacity same as we wanted to.
+        assert!(capacity >= new_capacity);
+    }
 
     Ok(())
 }
@@ -739,3 +780,25 @@ trait SizedTypeProperties: Sized {
 }
 
 impl<T> SizedTypeProperties for T {}
+
+const SPIN_LIMIT: u32 = 6;
+
+struct Backoff {
+    step: u32,
+}
+
+impl Backoff {
+    fn new() -> Self {
+        Backoff { step: 0 }
+    }
+
+    fn spin(&mut self) {
+        for _ in 0..1 << self.step {
+            hint::spin_loop();
+        }
+
+        if self.step <= SPIN_LIMIT {
+            self.step += 1;
+        }
+    }
+}
