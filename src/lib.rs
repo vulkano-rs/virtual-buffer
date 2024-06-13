@@ -520,9 +520,11 @@ mod unix {
     pub fn format_error(errnum: i32, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut buf = [0 as c_char; 128];
 
-        if unsafe { strerror_r(errnum as c_int, buf.as_mut_ptr(), buf.len()) } < 0 {
-            panic!("strerror_r failure");
-        }
+        let res = unsafe {
+            libc::strerror_r(errnum as c_int, buf.as_mut_ptr(), buf.len() as libc::size_t)
+        };
+
+        assert!(res >= 0, "strerror_r failure");
 
         let buf = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_bytes();
 
@@ -568,15 +570,6 @@ mod unix {
         #[cfg_attr(target_os = "haiku", link_name = "_errnop")]
         #[cfg_attr(target_os = "aix", link_name = "_Errno")]
         fn errno_location() -> *mut c_int;
-
-        #[cfg_attr(
-            all(
-                any(target_os = "linux", target_os = "hurd", target_env = "newlib"),
-                not(target_env = "ohos")
-            ),
-            link_name = "__xpg_strerror_r"
-        )]
-        fn strerror_r(errnum: c_int, buf: *mut c_char, buflen: usize) -> c_int;
     }
 }
 
