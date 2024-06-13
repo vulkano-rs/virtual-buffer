@@ -10,10 +10,14 @@ readme = "README.md"
 repository = "https://github.com/vulkano-rs/virtual-buffer"
 license = "MIT OR Apache-2.0"
 keywords = ["virtual", "memory", "buffer"]
-categories = ["concurrency", "data-structures", "memory-management"]
+categories = ["concurrency", "data-structures", "memory-management", "no-std", "no-std::no-alloc"]
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc = { version = "0.2", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-targets = "0.52"
+
+[features]
+default = ["std"]
+std = ["libc/std"]

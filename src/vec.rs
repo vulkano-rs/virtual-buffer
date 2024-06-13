@@ -1,16 +1,16 @@
 //! A concurrent, in-place growable vector.
 
 use self::TryReserveErrorKind::{AllocError, CapacityOverflow};
-use super::{align_up, page_size, Allocation};
+use super::{align_up, page_size, Allocation, Error};
 use crate::addr;
-use alloc::borrow::Cow;
 use core::{
     borrow::{Borrow, BorrowMut},
     cmp, fmt,
     hash::{Hash, Hasher},
     hint,
+    iter::FusedIterator,
     marker::PhantomData,
-    mem,
+    mem::{self, ManuallyDrop},
     ops::{Deref, DerefMut, Index, IndexMut},
     ptr,
     slice::{self, SliceIndex},
@@ -19,7 +19,6 @@ use core::{
         Ordering::{Acquire, Relaxed, Release},
     },
 };
-use std::{error::Error, io, iter::FusedIterator, mem::ManuallyDrop};
 
 /// A concurrent, in-place growable vector.
 ///
@@ -365,10 +364,10 @@ fn capacity_overflow() -> ! {
     panic!("capacity overflow");
 }
 
-// Dear Clippy, `io::Error` is 8 bytes.
+// Dear Clippy, `Error` is 4 bytes.
 #[allow(clippy::needless_pass_by_value)]
 #[cold]
-fn handle_alloc_error(err: io::Error) -> ! {
+fn handle_alloc_error(err: Error) -> ! {
     panic!("allocation failed: {err}");
 }
 
@@ -494,7 +493,8 @@ impl<T: PartialEq<U>, U> PartialEq<Vec<U>> for [T] {
     }
 }
 
-impl<T: PartialEq<U> + Clone, U> PartialEq<Vec<U>> for Cow<'_, [T]> {
+#[cfg(feature = "std")]
+impl<T: PartialEq<U> + Clone, U> PartialEq<Vec<U>> for std::borrow::Cow<'_, [T]> {
     #[inline]
     fn eq(&self, other: &Vec<U>) -> bool {
         **self == **other
@@ -749,7 +749,7 @@ impl From<TryReserveErrorKind> for TryReserveError {
 #[derive(Debug)]
 enum TryReserveErrorKind {
     CapacityOverflow,
-    AllocError(io::Error),
+    AllocError(Error),
 }
 
 impl fmt::Display for TryReserveError {
@@ -766,8 +766,9 @@ impl fmt::Display for TryReserveError {
     }
 }
 
-impl Error for TryReserveError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
+#[cfg(feature = "std")]
+impl std::error::Error for TryReserveError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.kind {
             TryReserveErrorKind::CapacityOverflow => None,
             TryReserveErrorKind::AllocError(err) => Some(err),

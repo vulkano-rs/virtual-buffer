@@ -61,8 +61,15 @@
 //! varies between processor architectures. As such, virtual memory operations can only affect
 //! ranges that are aligned to the *page size*.
 //!
+//! # Cargo features
+//!
+//! | Feature | Description                                       |
+//! |---------|---------------------------------------------------|
+//! | std     | Enables the use of `std::error` and `std::borrow` |
+//!
 //! [reserve]: self#reserving
 //! [committing]: self#committing
+//! [`Vec::with_capacity`]: https://doc.rust-lang.org/std/vec/struct.Vec.html#method.with_capacity
 //! [the `vec` module]: self::vec
 //! [prefaulted]: self#prefaulting
 
@@ -72,19 +79,17 @@
     clippy::inline_always,
     clippy::unused_self
 )]
-#![forbid(unsafe_op_in_unsafe_fn, clippy::undocumented_unsafe_blocks)]
+#![forbid(unsafe_op_in_unsafe_fn)]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 #[cfg(not(any(unix, windows)))]
 compile_error!("unsupported platform");
-
-extern crate alloc;
 
 #[cfg(unix)]
 use self::unix as sys;
 #[cfg(windows)]
 use self::windows as sys;
 use core::{fmt, mem};
-use std::io;
 
 pub mod vec;
 
@@ -119,7 +124,7 @@ impl Allocation {
     /// [committed]: self#committing
     /// [unreserved]: self#unreserving
     /// [`commit`]: Self::commit
-    pub fn new(size: usize) -> io::Result<Self> {
+    pub fn new(size: usize) -> Result<Self> {
         assert!(is_aligned(size, page_size()));
         assert_ne!(size, 0);
 
@@ -192,7 +197,7 @@ impl Allocation {
     /// [Commits]: self#committing
     /// [dangling]: Self::dangling
     /// [page size]: self#pages
-    pub fn commit(&self, ptr: *mut u8, size: usize) -> io::Result<()> {
+    pub fn commit(&self, ptr: *mut u8, size: usize) -> Result<()> {
         self.check_range(ptr, size);
 
         // SAFETY: Enforced by the `check_range` call above.
@@ -215,7 +220,7 @@ impl Allocation {
     /// [Decommits]: self#decommitting
     /// [dangling]: Self::dangling
     /// [page size]: self#pages
-    pub fn decommit(&self, ptr: *mut u8, size: usize) -> io::Result<()> {
+    pub fn decommit(&self, ptr: *mut u8, size: usize) -> Result<()> {
         self.check_range(ptr, size);
 
         // SAFETY: Enforced by the `check_range` call above.
@@ -238,7 +243,7 @@ impl Allocation {
     /// [Prefaults]: self#prefaulting
     /// [dangling]: Self::dangling
     /// [page size]: self#pages
-    pub fn prefault(&self, ptr: *mut u8, size: usize) -> io::Result<()> {
+    pub fn prefault(&self, ptr: *mut u8, size: usize) -> Result<()> {
         self.check_range(ptr, size);
 
         // SAFETY: Enforced by the `check_range` call above.
@@ -311,13 +316,43 @@ fn is_aligned(val: usize, alignment: usize) -> bool {
     val & (alignment - 1) == 0
 }
 
+/// The type returned by the various [`Allocation`] methods.
+pub type Result<T, E = Error> = ::core::result::Result<T, E>;
+
+/// Represents an OS error that can be returned by the by the various [`Allocation`] methods.
+#[derive(Debug)]
+pub struct Error {
+    code: i32,
+}
+
+impl Error {
+    /// Returns the OS error that this error represents.
+    #[inline]
+    #[must_use]
+    pub fn as_raw_os_error(&self) -> i32 {
+        self.code
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        sys::format_error(self.code, f)
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for Error {}
+
 #[cfg(unix)]
 mod unix {
-    use super::{result, without_provenance_mut};
-    use std::{
-        ffi::c_void,
-        io,
+    #![allow(non_camel_case_types)]
+
+    use super::{without_provenance_mut, Result};
+    use core::{
+        ffi::{c_char, c_int, c_void, CStr},
+        fmt,
         ptr::{self, NonNull},
+        str,
         sync::atomic::{AtomicUsize, Ordering},
     };
 
@@ -336,7 +371,7 @@ mod unix {
     unsafe impl Sync for Allocation {}
 
     impl Allocation {
-        pub fn new(size: usize) -> io::Result<Self> {
+        pub fn new(size: usize) -> Result<Self> {
             // Miri doesn't support protections other than read/write.
             #[cfg(not(miri))]
             let prot = libc::PROT_NONE;
@@ -380,7 +415,7 @@ mod unix {
         }
 
         #[cfg(not(miri))]
-        pub unsafe fn commit(&self, ptr: *mut c_void, size: usize) -> io::Result<()> {
+        pub unsafe fn commit(&self, ptr: *mut c_void, size: usize) -> Result<()> {
             // SAFETY: The caller must guarantee that `ptr` and `size` are in bounds of the
             // allocation such that no other allocations can be affected and that `ptr` is aligned
             // to the page size. As for this allocation, the only way to access it is by unsafely
@@ -390,7 +425,7 @@ mod unix {
         }
 
         #[cfg(miri)]
-        pub unsafe fn commit(&self, _ptr: *mut c_void, _size: usize) -> io::Result<()> {
+        pub unsafe fn commit(&self, _ptr: *mut c_void, _size: usize) -> Result<()> {
             // Committing memory has no effect on the operational semantics, so there's nothing for
             // Miri to test anyway except hitting a segmentation fault which is perfectly defined
             // behavior.
@@ -398,7 +433,7 @@ mod unix {
         }
 
         #[cfg(not(miri))]
-        pub unsafe fn decommit(&self, ptr: *mut c_void, size: usize) -> io::Result<()> {
+        pub unsafe fn decommit(&self, ptr: *mut c_void, size: usize) -> Result<()> {
             // God forbid this be one syscall :ferrisPensive:
 
             // SAFETY: The caller must guarantee that `ptr` and `size` are in bounds of the
@@ -415,7 +450,7 @@ mod unix {
         }
 
         #[cfg(miri)]
-        pub unsafe fn decommit(&self, _ptr: *mut c_void, _size: usize) -> io::Result<()> {
+        pub unsafe fn decommit(&self, _ptr: *mut c_void, _size: usize) -> Result<()> {
             // Decommitting memory has no effect on the operational semantics, so there's nothing
             // for Miri to test anyway except hitting a segmentation fault which is perfectly
             // defined behavior.
@@ -423,7 +458,7 @@ mod unix {
         }
 
         #[cfg(not(miri))]
-        pub unsafe fn prefault(&self, ptr: *mut c_void, size: usize) -> io::Result<()> {
+        pub unsafe fn prefault(&self, ptr: *mut c_void, size: usize) -> Result<()> {
             // SAFETY: The caller must guarantee that `ptr` and `size` are in bounds of the
             // allocation such that no other allocations can be affected and that `ptr` is aligned
             // to the page size. This call is otherwise purely an optimization hint and can't
@@ -432,7 +467,7 @@ mod unix {
         }
 
         #[cfg(miri)]
-        pub unsafe fn prefault(&self, _ptr: *mut c_void, _size: usize) -> io::Result<()> {
+        pub unsafe fn prefault(&self, _ptr: *mut c_void, _size: usize) -> Result<()> {
             Ok(())
         }
     }
@@ -455,7 +490,6 @@ mod unix {
 
         #[cold]
         fn page_size_slow() -> usize {
-            // SAFETY: The call is valid 🤷
             let page_size = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGE_SIZE) }).unwrap();
             PAGE_SIZE.store(page_size, Ordering::Relaxed);
 
@@ -470,17 +504,92 @@ mod unix {
             page_size_slow()
         }
     }
+
+    fn result(condition: bool) -> Result<()> {
+        if condition {
+            Ok(())
+        } else {
+            Err(super::Error { code: errno() })
+        }
+    }
+
+    fn errno() -> i32 {
+        unsafe { *errno_location() as i32 }
+    }
+
+    pub fn format_error(errnum: i32, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut buf = [0 as c_char; 128];
+
+        if unsafe { strerror_r(errnum as c_int, buf.as_mut_ptr(), buf.len()) } < 0 {
+            panic!("strerror_r failure");
+        }
+
+        let buf = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_bytes();
+
+        let s = str::from_utf8(buf).unwrap_or_else(|err| {
+            // SAFETY: The `from_utf8` call above checked that `err.valid_up_to()` bytes are valid.
+            unsafe { str::from_utf8_unchecked(&buf[..err.valid_up_to()]) }
+        });
+
+        f.write_str(s)
+    }
+
+    extern "C" {
+        #[cfg(not(any(target_os = "dragonfly", target_os = "vxworks")))]
+        #[cfg_attr(
+            any(
+                target_os = "linux",
+                target_os = "emscripten",
+                target_os = "fuchsia",
+                target_os = "l4re",
+                target_os = "hurd",
+            ),
+            link_name = "__errno_location"
+        )]
+        #[cfg_attr(
+            any(
+                target_os = "netbsd",
+                target_os = "openbsd",
+                target_os = "android",
+                target_os = "redox",
+                target_env = "newlib"
+            ),
+            link_name = "__errno"
+        )]
+        #[cfg_attr(
+            any(target_os = "solaris", target_os = "illumos"),
+            link_name = "___errno"
+        )]
+        #[cfg_attr(target_os = "nto", link_name = "__get_errno_ptr")]
+        #[cfg_attr(
+            any(target_os = "freebsd", target_vendor = "apple"),
+            link_name = "__error"
+        )]
+        #[cfg_attr(target_os = "haiku", link_name = "_errnop")]
+        #[cfg_attr(target_os = "aix", link_name = "_Errno")]
+        fn errno_location() -> *mut c_int;
+
+        #[cfg_attr(
+            all(
+                any(target_os = "linux", target_os = "hurd", target_env = "newlib"),
+                not(target_env = "ohos")
+            ),
+            link_name = "__xpg_strerror_r"
+        )]
+        fn strerror_r(errnum: c_int, buf: *mut c_char, buflen: usize) -> c_int;
+    }
 }
 
 #[cfg(windows)]
 mod windows {
     #![allow(non_camel_case_types, non_snake_case)]
 
-    use super::{result, without_provenance};
-    use std::{
+    use super::{without_provenance_mut, Result};
+    use core::{
         ffi::c_void,
-        io, mem,
+        fmt, mem,
         ptr::{self, NonNull},
+        str,
         sync::atomic::{AtomicUsize, Ordering},
     };
 
@@ -499,7 +608,7 @@ mod windows {
     unsafe impl Sync for Allocation {}
 
     impl Allocation {
-        pub fn new(size: usize) -> io::Result<Self> {
+        pub fn new(size: usize) -> Result<Self> {
             // Miri doesn't support protections other than read/write.
             #[cfg(not(miri))]
             let protect = PAGE_NOACCESS;
@@ -541,7 +650,7 @@ mod windows {
         }
 
         #[cfg(not(miri))]
-        pub unsafe fn commit(&self, ptr: *mut c_void, size: usize) -> io::Result<()> {
+        pub unsafe fn commit(&self, ptr: *mut c_void, size: usize) -> Result<()> {
             // SAFETY: The caller must guarantee that `ptr` and `size` are in bounds of the
             // allocation such that no other allocations can be affected. As for this allocation,
             // the only way to access it is by unsafely dererencing its pointer, where the user
@@ -550,7 +659,7 @@ mod windows {
         }
 
         #[cfg(miri)]
-        pub unsafe fn commit(&self, _ptr: *mut c_void, _size: usize) -> io::Result<()> {
+        pub unsafe fn commit(&self, _ptr: *mut c_void, _size: usize) -> Result<()> {
             // Committing memory has no effect on the operational semantics, so there's nothing for
             // Miri to test anyway except hitting a segmentation fault which is perfectly defined
             // behavior.
@@ -558,7 +667,7 @@ mod windows {
         }
 
         #[cfg(not(miri))]
-        pub unsafe fn decommit(&self, ptr: *mut c_void, size: usize) -> io::Result<()> {
+        pub unsafe fn decommit(&self, ptr: *mut c_void, size: usize) -> Result<()> {
             // SAFETY: The caller must guarantee that `ptr` and `size` are in bounds of the
             // allocation such that no other allocations can be affected. As for this allocation,
             // the only way to access it is by unsafely dererencing its pointer, where the user
@@ -567,7 +676,7 @@ mod windows {
         }
 
         #[cfg(miri)]
-        pub unsafe fn decommit(&self, _ptr: *mut c_void, _size: usize) -> io::Result<()> {
+        pub unsafe fn decommit(&self, _ptr: *mut c_void, _size: usize) -> Result<()> {
             // Decommitting memory has no effect on the operational semantics, so there's nothing
             // for Miri to test anyway except hitting a segmentation fault which is perfectly
             // defined behavior.
@@ -575,7 +684,7 @@ mod windows {
         }
 
         #[cfg(all(not(miri), not(target_vendor = "win7")))]
-        pub unsafe fn prefault(&self, ptr: *mut c_void, size: usize) -> io::Result<()> {
+        pub unsafe fn prefault(&self, ptr: *mut c_void, size: usize) -> Result<()> {
             let entry = WIN32_MEMORY_RANGE_ENTRY {
                 VirtualAddress: ptr,
                 NumberOfBytes: size,
@@ -590,7 +699,7 @@ mod windows {
         }
 
         #[cfg(any(miri, target_vendor = "win7"))]
-        pub unsafe fn prefault(&self, _ptr: *mut c_void, _size: usize) -> io::Result<()> {
+        pub unsafe fn prefault(&self, _ptr: *mut c_void, _size: usize) -> Result<()> {
             Ok(())
         }
     }
@@ -632,6 +741,89 @@ mod windows {
         }
     }
 
+    fn result(condition: bool) -> Result<()> {
+        if condition {
+            Ok(())
+        } else {
+            Err(super::Error { code: errno() })
+        }
+    }
+
+    fn errno() -> i32 {
+        unsafe { GetLastError() as i32 }
+    }
+
+    pub fn format_error(mut errnum: i32, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut buf = [0u16; 2048];
+        let mut module = ptr::null_mut();
+        let mut flags = 0;
+
+        // NTSTATUS errors may be encoded as HRESULT, which may returned from
+        // GetLastError. For more information about Windows error codes, see
+        // `[MS-ERREF]`: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/0642cb2f-2075-4469-918c-4441e69c548a
+        if (errnum & FACILITY_NT_BIT as i32) != 0 {
+            // format according to https://support.microsoft.com/en-us/help/259693
+            const NTDLL_DLL: &[u16] = &[
+                'N' as _, 'T' as _, 'D' as _, 'L' as _, 'L' as _, '.' as _, 'D' as _, 'L' as _,
+                'L' as _, 0,
+            ];
+
+            module = unsafe { GetModuleHandleW(NTDLL_DLL.as_ptr()) };
+
+            if !module.is_null() {
+                errnum ^= FACILITY_NT_BIT as i32;
+                flags = FORMAT_MESSAGE_FROM_HMODULE;
+            }
+        }
+
+        let res = unsafe {
+            FormatMessageW(
+                flags | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                module,
+                errnum as u32,
+                0,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+                ptr::null(),
+            ) as usize
+        };
+
+        if res == 0 {
+            // Sometimes FormatMessageW can fail e.g., system doesn't like 0 as langId,
+            let fm_err = errno();
+            return write!(
+                f,
+                "OS Error {errnum} (FormatMessageW() returned error {fm_err})",
+            );
+        }
+
+        let mut output_len = 0;
+        let mut output = [0u8; 2048];
+
+        for c in char::decode_utf16(buf[..res].iter().copied()) {
+            let Ok(c) = c else {
+                return write!(
+                    f,
+                    "OS Error {errnum} (FormatMessageW() returned invalid UTF-16)",
+                );
+            };
+
+            let len = c.len_utf8();
+
+            if len > output.len() - output_len {
+                break;
+            }
+
+            c.encode_utf8(&mut output[output_len..]);
+            output_len += len;
+        }
+
+        // SAFETY: The `encode_utf8` calls above were used to encode valid UTF-8.
+        let s = unsafe { str::from_utf8_unchecked(&output[..output_len]) };
+
+        f.write_str(s)
+    }
+
     windows_targets::link!("kernel32.dll" "system" fn GetSystemInfo(
         lpSystemInfo: *mut SYSTEM_INFO,
     ));
@@ -659,6 +851,22 @@ mod windows {
         VirtualAddresses: *const WIN32_MEMORY_RANGE_ENTRY,
         Flags: u32,
     ) -> i32);
+
+    windows_targets::link!("kernel32.dll" "system" fn GetLastError() -> u32);
+
+    windows_targets::link!("kernel32.dll" "system" fn FormatMessageW(
+        dwFlags: u32,
+        lpSource: *const c_void,
+        dwMessageId: u32,
+        dwLanguageId: u32,
+        lpBuffer: *mut u16,
+        nSize: u32,
+        arguments: *const *const i8,
+    ) -> u32);
+
+    windows_targets::link!("kernel32.dll" "system" fn GetModuleHandleW(
+        lpModuleName: *const u16,
+    ) -> HMODULE);
 
     #[repr(C)]
     struct SYSTEM_INFO {
@@ -692,6 +900,14 @@ mod windows {
         VirtualAddress: *mut c_void,
         NumberOfBytes: usize,
     }
+
+    const FACILITY_NT_BIT: u32 = 1 << 28;
+
+    const FORMAT_MESSAGE_FROM_HMODULE: u32 = 1 << 11;
+    const FORMAT_MESSAGE_FROM_SYSTEM: u32 = 1 << 12;
+    const FORMAT_MESSAGE_IGNORE_INSERTS: u32 = 1 << 9;
+
+    type HMODULE = *mut c_void;
 }
 
 // TODO: Replace this with `<*const u8>::addr` once it's stable.
@@ -706,12 +922,4 @@ fn addr(ptr: *const u8) -> usize {
 const fn without_provenance_mut(addr: usize) -> *mut u8 {
     // SAFETY: `usize` and `*mut u8` have the same layout.
     unsafe { mem::transmute::<usize, *mut u8>(addr) }
-}
-
-fn result(condition: bool) -> io::Result<()> {
-    if condition {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
 }
