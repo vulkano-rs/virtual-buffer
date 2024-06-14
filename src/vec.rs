@@ -672,6 +672,20 @@ impl<T> IntoIter<T> {
     }
 }
 
+impl<T> AsRef<[T]> for IntoIter<T> {
+    #[inline]
+    fn as_ref(&self) -> &[T] {
+        self.as_slice()
+    }
+}
+
+impl<T> AsMut<[T]> for IntoIter<T> {
+    #[inline]
+    fn as_mut(&mut self) -> &mut [T] {
+        self.as_mut_slice()
+    }
+}
+
 impl<T: fmt::Debug> fmt::Debug for IntoIter<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("IntoIter").field(&self.as_slice()).finish()
