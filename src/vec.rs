@@ -12,7 +12,7 @@ use core::{
     marker::PhantomData,
     mem::{self, ManuallyDrop},
     ops::{Deref, DerefMut, Index, IndexMut},
-    ptr::{self, NonNull},
+    ptr,
     slice::{self, SliceIndex},
     sync::atomic::{
         AtomicUsize,
@@ -619,8 +619,7 @@ impl<T> IntoIterator for Vec<T> {
 
         IntoIter {
             _allocation: allocation,
-            // SAFETY: `Vec`'s pointer is guaranteed to be non-null.
-            start: unsafe { NonNull::new_unchecked(start) },
+            start,
             end,
             marker: PhantomData,
         }
@@ -648,7 +647,7 @@ impl<T: Ord> Ord for Vec<T> {
 /// [`into_iter`]: struct.Vec.html#method.into_iter-1
 pub struct IntoIter<T> {
     _allocation: Allocation,
-    start: NonNull<T>,
+    start: *const T,
     end: *const T,
     marker: PhantomData<T>,
 }
@@ -663,13 +662,13 @@ impl<T> IntoIter<T> {
     /// Returns the remaining items of this iterator as a slice.
     #[inline]
     pub fn as_slice(&self) -> &[T] {
-        unsafe { slice::from_raw_parts(self.start.as_ptr(), self.len()) }
+        unsafe { slice::from_raw_parts(self.start, self.len()) }
     }
 
     /// Returns the remaining items of this iterator as a mutable slice.
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
-        unsafe { slice::from_raw_parts_mut(self.start.as_ptr(), self.len()) }
+        unsafe { slice::from_raw_parts_mut(self.start.cast_mut(), self.len()) }
     }
 }
 
@@ -695,7 +694,7 @@ impl<T: fmt::Debug> fmt::Debug for IntoIter<T> {
 
 impl<T> Drop for IntoIter<T> {
     fn drop(&mut self) {
-        let elements = ptr::slice_from_raw_parts_mut(self.start.as_ptr(), self.len());
+        let elements = ptr::slice_from_raw_parts_mut(self.start.cast_mut(), self.len());
 
         // SAFETY: We own the collection, and it is being dropped which ensures that the elements
         // can't be accessed again.
@@ -708,7 +707,7 @@ impl<T> Iterator for IntoIter<T> {
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        if self.start.as_ptr() == self.end.cast_mut() {
+        if self.start == self.end {
             return None;
         }
 
@@ -746,19 +745,19 @@ impl<T> Iterator for IntoIter<T> {
 impl<T> DoubleEndedIterator for IntoIter<T> {
     #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
-        if self.start.as_ptr() == self.end.cast_mut() {
+        if self.start == self.end {
             return None;
         }
 
         let ptr = if T::IS_ZST {
             self.end = self.end.cast::<u8>().wrapping_sub(1).cast::<T>();
 
-            self.start.as_ptr()
+            self.start
         } else {
             // SAFETY: We checked that there are still elements remaining above.
             self.end = unsafe { self.end.sub(1) };
 
-            self.end.cast_mut()
+            self.end
         };
 
         // SAFETY: We own the collection, and have just decremented the `end` pointer such that
@@ -771,13 +770,13 @@ impl<T> ExactSizeIterator for IntoIter<T> {
     #[inline]
     fn len(&self) -> usize {
         if T::IS_ZST {
-            addr(self.end.cast()).wrapping_sub(addr(self.start.as_ptr().cast()))
+            addr(self.end.cast()).wrapping_sub(addr(self.start.cast()))
         } else {
             // SAFETY:
             // * `start` and `end` were both created from the same object in `Vec::into_iter`.
             // * `Vec::new` ensures that the allocation size doesn't exceed `isize::MAX` bytes.
             // * We know that the allocation doesn't wrap around the address space.
-            unsafe { self.end.offset_from(self.start.as_ptr()) as usize }
+            unsafe { self.end.offset_from(self.start) as usize }
         }
     }
 }
