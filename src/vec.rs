@@ -661,12 +661,14 @@ unsafe impl<T: Sync> Sync for IntoIter<T> {}
 impl<T> IntoIter<T> {
     /// Returns the remaining items of this iterator as a slice.
     #[inline]
+    #[must_use]
     pub fn as_slice(&self) -> &[T] {
         unsafe { slice::from_raw_parts(self.start, self.len()) }
     }
 
     /// Returns the remaining items of this iterator as a mutable slice.
     #[inline]
+    #[must_use]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         unsafe { slice::from_raw_parts_mut(self.start.cast_mut(), self.len()) }
     }
@@ -772,11 +774,16 @@ impl<T> ExactSizeIterator for IntoIter<T> {
         if T::IS_ZST {
             addr(self.end.cast()).wrapping_sub(addr(self.start.cast()))
         } else {
+            // We know that the return value is positive because by our invariant, `self.end` is
+            // always greater or equal to `self.start`.
+            #[allow(clippy::cast_sign_loss)]
             // SAFETY:
             // * `start` and `end` were both created from the same object in `Vec::into_iter`.
             // * `Vec::new` ensures that the allocation size doesn't exceed `isize::MAX` bytes.
             // * We know that the allocation doesn't wrap around the address space.
-            unsafe { self.end.offset_from(self.start) as usize }
+            unsafe {
+                self.end.offset_from(self.start) as usize
+            }
         }
     }
 }
