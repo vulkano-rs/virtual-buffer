@@ -652,6 +652,36 @@ pub struct IntoIter<T> {
     marker: PhantomData<T>,
 }
 
+impl<T> IntoIter<T> {
+    /// Returns the remaining items of this iterator as a slice.
+    #[inline]
+    pub fn as_slice(&self) -> &[T] {
+        unsafe { slice::from_raw_parts(self.start, self.len()) }
+    }
+
+    /// Returns the remaining items of this iterator as a mutable slice.
+    #[inline]
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        unsafe { slice::from_raw_parts_mut(self.start, self.len()) }
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for IntoIter<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("IntoIter").field(&self.as_slice()).finish()
+    }
+}
+
+impl<T> Drop for IntoIter<T> {
+    fn drop(&mut self) {
+        let elements = ptr::slice_from_raw_parts_mut(self.start, self.len());
+
+        // SAFETY: We own the collection, and it is being dropped which ensures that the elements
+        // can't be accessed again.
+        unsafe { elements.drop_in_place() };
+    }
+}
+
 impl<T> Iterator for IntoIter<T> {
     type Item = T;
 
@@ -732,16 +762,6 @@ impl<T> ExactSizeIterator for IntoIter<T> {
 }
 
 impl<T> FusedIterator for IntoIter<T> {}
-
-impl<T> Drop for IntoIter<T> {
-    fn drop(&mut self) {
-        let elements = ptr::slice_from_raw_parts_mut(self.start, self.len());
-
-        // SAFETY: We own the collection, and it is being dropped which ensures that the elements
-        // can't be accessed again.
-        unsafe { elements.drop_in_place() };
-    }
-}
 
 /// Error that can happen when trying to [reserve] or [commit] memory for a [`Vec`].
 ///
