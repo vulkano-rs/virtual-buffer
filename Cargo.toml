@@ -1,6 +1,6 @@
 [package]
 name = "virtual-buffer"
-version = "0.1.0"
+version = "1.0.0"
 authors = ["marc0246 <40955683+marc0246@users.noreply.github.com>"]
 edition = "2021"
 rust-version = "1.65"
@@ -9,7 +9,7 @@ documentation = "https://docs.rs/virtual-buffer"
 readme = "README.md"
 repository = "https://github.com/vulkano-rs/virtual-buffer"
 license = "MIT OR Apache-2.0"
-keywords = ["virtual", "memory", "buffer"]
+keywords = ["virtual", "memory", "buffer", "lock-free", "concurrent", "vector"]
 categories = ["concurrency", "data-structures", "memory-management", "no-std", "no-std::no-alloc"]
 
 [target.'cfg(unix)'.dependencies]

@@ -1,4 +1,4 @@
-//! A concurrent, in-place growable vector.
+//! A lock-free, concurrent, in-place growable vector.
 
 use self::TryReserveErrorKind::{AllocError, CapacityOverflow};
 use super::{align_up, page_size, Allocation, Error};
@@ -20,7 +20,7 @@ use core::{
     },
 };
 
-/// A concurrent, in-place growable vector.
+/// A lock-free, concurrent, in-place growable vector.
 ///
 /// This type behaves identically to the standard library `Vec` except that it is guaranteed to
 /// never reallocate, and as such can support concurrent reads while also supporting growth. All
@@ -644,7 +644,7 @@ impl<T: Ord> Ord for Vec<T> {
 ///
 /// This struct is created by the [`into_iter`] method on [`Vec`].
 ///
-/// [`into_iter`]: struct.Vec.html#method.into_iter-1
+/// [`into_iter`]: Vec::into_iter
 pub struct IntoIter<T> {
     _allocation: Allocation,
     start: *const T,
