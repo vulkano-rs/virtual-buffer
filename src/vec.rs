@@ -652,6 +652,12 @@ pub struct IntoIter<T> {
     marker: PhantomData<T>,
 }
 
+// SAFETY: We own the collection, and synchronization to it is ensured using mutable references.
+unsafe impl<T: Send> Send for IntoIter<T> {}
+
+// SAFETY: We own the collection, and synchronization to it is ensured using mutable references.
+unsafe impl<T: Sync> Sync for IntoIter<T> {}
+
 impl<T> IntoIter<T> {
     /// Returns the remaining items of this iterator as a slice.
     #[inline]
