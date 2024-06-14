@@ -9,7 +9,7 @@ documentation = "https://docs.rs/virtual-buffer"
 readme = "README.md"
 repository = "https://github.com/vulkano-rs/virtual-buffer"
 license = "MIT OR Apache-2.0"
-keywords = ["virtual", "memory", "buffer", "lock-free", "concurrent", "vector"]
+keywords = ["virtual", "memory", "lock-free", "concurrent", "vector"]
 categories = ["concurrency", "data-structures", "memory-management", "no-std", "no-std::no-alloc"]
 
 [target.'cfg(unix)'.dependencies]
