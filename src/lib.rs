@@ -513,8 +513,14 @@ mod unix {
         }
     }
 
+    #[cfg(not(target_os = "vxworks"))]
     fn errno() -> i32 {
         unsafe { *errno_location() as i32 }
+    }
+
+    #[cfg(target_os = "vxworks")]
+    fn errno() -> i32 {
+        libc::errnoGet() as i32
     }
 
     pub fn format_error(errnum: i32, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -537,7 +543,7 @@ mod unix {
     }
 
     extern "C" {
-        #[cfg(not(any(target_os = "dragonfly", target_os = "vxworks")))]
+        #[cfg(not(target_os = "vxworks"))]
         #[cfg_attr(
             any(
                 target_os = "linux",
@@ -545,6 +551,7 @@ mod unix {
                 target_os = "fuchsia",
                 target_os = "l4re",
                 target_os = "hurd",
+                target_os = "dragonfly"
             ),
             link_name = "__errno_location"
         )]
