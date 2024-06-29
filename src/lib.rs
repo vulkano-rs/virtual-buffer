@@ -520,7 +520,7 @@ mod unix {
 
     #[cfg(target_os = "vxworks")]
     fn errno() -> i32 {
-        libc::errnoGet() as i32
+        unsafe { libc::errnoGet() as i32 }
     }
 
     pub fn format_error(errnum: i32, f: &mut fmt::Formatter<'_>) -> fmt::Result {
