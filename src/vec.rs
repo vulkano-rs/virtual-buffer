@@ -31,7 +31,15 @@ pub struct Vec<T> {
     capacity: AtomicUsize,
     len: AtomicUsize,
     reserved_len: AtomicUsize,
-    marker: PhantomData<T>,
+    /// ```compile_fail,E0597
+    /// let vec = virtual_buffer::vec::Vec::<&'static str>::new(1);
+    /// {
+    ///     let s = "oh no".to_owned();
+    ///     vec.push(&s);
+    /// }
+    /// dbg!(vec);
+    /// ```
+    marker: PhantomData<(T, fn(T))>,
 }
 
 impl<T> Vec<T> {
