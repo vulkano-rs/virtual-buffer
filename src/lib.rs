@@ -171,10 +171,9 @@ impl Allocation {
         self.inner.ptr().cast()
     }
 
-    /// Returns the size that was used to [allocate] `self` aligned up to the [page size].
+    /// Returns the size that was used to [allocate] `self`.
     ///
     /// [allocate]: Self::new
-    /// [page size]: self#pages
     #[inline(always)]
     #[must_use]
     pub const fn size(&self) -> usize {
@@ -319,7 +318,7 @@ fn is_aligned(val: usize, alignment: usize) -> bool {
 /// The type returned by the various [`Allocation`] methods.
 pub type Result<T, E = Error> = ::core::result::Result<T, E>;
 
-/// Represents an OS error that can be returned by the by the various [`Allocation`] methods.
+/// Represents an OS error that can be returned by the various [`Allocation`] methods.
 #[derive(Debug)]
 pub struct Error {
     code: i32,
@@ -910,14 +909,14 @@ mod windows {
     type HMODULE = *mut c_void;
 }
 
-// TODO: Replace this with `<*const u8>::addr` once it's stable.
+// TODO: Replace this with `<*const u8>::addr` once we release a breaking version.
 #[allow(clippy::transmutes_expressible_as_ptr_casts)]
 fn addr(ptr: *const u8) -> usize {
     // SAFETY: `*const u8` and `usize` have the same layout.
     unsafe { mem::transmute::<*const u8, usize>(ptr) }
 }
 
-// TODO: Replace this with `ptr::without_provenance_mut` once it's stable.
+// TODO: Replace this with `ptr::without_provenance_mut` once we release a breaking version.
 #[allow(clippy::useless_transmute)]
 const fn without_provenance_mut(addr: usize) -> *mut u8 {
     // SAFETY: `usize` and `*mut u8` have the same layout.
