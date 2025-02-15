@@ -241,7 +241,6 @@ impl<T> Vec<T> {
         // write to this same index.
         unsafe { self.as_ptr().cast_mut().add(reserved_len).write(value) };
 
-        let mut len = self.len();
         let mut backoff = Backoff::new();
 
         loop {
@@ -249,17 +248,14 @@ impl<T> Vec<T> {
             // readers by using the `Release` ordering.
             match unsafe {
                 self.len
-                    .compare_exchange_weak(len, reserved_len + 1, Release, Relaxed)
+                    .compare_exchange_weak(reserved_len, reserved_len + 1, Release, Relaxed)
             } {
                 Ok(_) => break,
-                Err(new_len) => {
-                    len = new_len;
-                    backoff.spin();
-                }
+                Err(_) => backoff.spin(),
             }
         }
 
-        len
+        reserved_len
     }
 
     /// Appends an element to the end of the vector. Returns the index of the inserted element.
