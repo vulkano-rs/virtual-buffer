@@ -1,4 +1,4 @@
-//! A lock-free, concurrent, in-place growable vector.
+//! A concurrent, in-place growable vector.
 
 use self::TryReserveErrorKind::{AllocError, CapacityOverflow};
 use super::{align_up, page_size, Allocation, Error};
@@ -20,7 +20,7 @@ use core::{
     },
 };
 
-/// A lock-free, concurrent, in-place growable vector.
+/// A concurrent, in-place growable vector.
 ///
 /// This type behaves identically to the standard library `Vec` except that it is guaranteed to
 /// never reallocate, and as such can support concurrent reads while also supporting growth. Reads
