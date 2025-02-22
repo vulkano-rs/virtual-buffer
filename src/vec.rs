@@ -283,6 +283,8 @@ impl<T> Vec<T> {
         // SAFETY: We have written the element.
         unsafe { *self.len.get_mut() += 1 };
 
+        *self.reserved_len.get_mut() = self.len_mut();
+
         len
     }
 
