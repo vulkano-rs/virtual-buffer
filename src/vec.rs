@@ -23,8 +23,8 @@ use core::{
 /// A lock-free, concurrent, in-place growable vector.
 ///
 /// This type behaves identically to the standard library `Vec` except that it is guaranteed to
-/// never reallocate, and as such can support concurrent reads while also supporting growth. All
-/// operations are lock-free.
+/// never reallocate, and as such can support concurrent reads while also supporting growth. Reads
+/// are always wait-free; however, pushing is not, as it acts sort of like a spinlock.
 pub struct Vec<T> {
     allocation: Allocation,
     max_capacity: usize,
