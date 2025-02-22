@@ -42,6 +42,16 @@ pub struct Vec<T> {
     marker: PhantomData<(T, fn(T))>,
 }
 
+// SAFETY: `Vec` is an owned collection, which makes it safe to send to another a thread as long as
+// its element is safe to send to another a thread.
+unsafe impl<T: Send> Send for Vec<T> {}
+
+// SAFETY: `Vec` allows pushing through a shared reference, which allows a shared `Vec` to be used
+// to send elements to another thread. Additionally, `Vec` allows getting a reference to any
+// element from any thread. Therefore, it is safe to share `Vec` between threads as long as the
+// element is both sendable and shareable.
+unsafe impl<T: Send + Sync> Sync for Vec<T> {}
+
 impl<T> Vec<T> {
     /// Creates a new `Vec`.
     ///
