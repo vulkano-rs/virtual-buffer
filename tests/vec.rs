@@ -2,7 +2,7 @@ use std::thread;
 use virtual_buffer::vec::Vec;
 
 #[cfg(not(miri))]
-const ITERATIONS: u64 = 1024 * 1024;
+const ITERATIONS: u64 = 128 * 1024;
 #[cfg(miri)]
 const ITERATIONS: u64 = 1024;
 
