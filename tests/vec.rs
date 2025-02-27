@@ -1,22 +1,19 @@
-use std::thread;
+use std::{sync::Barrier, thread};
 use virtual_buffer::vec::Vec;
-
-#[cfg(not(miri))]
-const ITERATIONS: u64 = 128 * 1024;
-#[cfg(miri)]
-const ITERATIONS: u64 = 1024;
 
 #[test]
 fn push_stress() {
-    const THREADS: u64 = 8;
+    const ITERATIONS: usize = if cfg!(miri) { 10 } else { 1_000 };
+    const THREADS: usize = 8;
 
-    let vec = Vec::new(ITERATIONS.try_into().unwrap());
+    let vec = &Vec::new(ITERATIONS);
+    let barrier = &Barrier::new(THREADS);
 
     thread::scope(|s| {
-        let vec = &vec;
-
         for i in 0..THREADS {
             s.spawn(move || {
+                barrier.wait();
+
                 for n in 1..=ITERATIONS / THREADS {
                     vec.push(i * (ITERATIONS / THREADS) + n);
                 }
@@ -25,7 +22,7 @@ fn push_stress() {
     });
 
     assert_eq!(
-        vec.into_iter().sum::<u64>(),
+        vec.into_iter().sum::<usize>(),
         (ITERATIONS + 1) * ITERATIONS / 2,
     );
 }
