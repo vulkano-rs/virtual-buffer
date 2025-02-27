@@ -3,7 +3,7 @@ use virtual_buffer::vec::Vec;
 
 #[test]
 fn push_stress() {
-    const ITERATIONS: usize = if cfg!(miri) { 10 } else { 1_000 };
+    const ITERATIONS: usize = if cfg!(miri) { 16 } else { 1_024 };
     const THREADS: usize = 8;
 
     let vec = &Vec::new(ITERATIONS);
