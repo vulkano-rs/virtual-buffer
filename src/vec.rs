@@ -841,8 +841,7 @@ impl fmt::Display for TryReserveError {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for TryReserveError {
+impl core::error::Error for TryReserveError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.kind {
             TryReserveErrorKind::CapacityOverflow => None,

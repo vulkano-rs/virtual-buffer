@@ -63,9 +63,9 @@
 //!
 //! # Cargo features
 //!
-//! | Feature | Description                                       |
-//! |---------|---------------------------------------------------|
-//! | std     | Enables the use of `std::error` and `std::borrow` |
+//! | Feature | Description                      |
+//! |---------|----------------------------------|
+//! | std     | Enables the use of `std::borrow` |
 //!
 //! [reserve]: self#reserving
 //! [committing]: self#committing
@@ -339,8 +339,7 @@ impl fmt::Display for Error {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for Error {}
+impl core::error::Error for Error {}
 
 #[cfg(unix)]
 mod unix {
