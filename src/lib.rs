@@ -579,10 +579,9 @@ mod unix {
     }
 }
 
-#[allow(clippy::upper_case_acronyms)]
 #[cfg(windows)]
 mod windows {
-    #![allow(non_camel_case_types, non_snake_case)]
+    #![allow(non_camel_case_types, non_snake_case, clippy::upper_case_acronyms)]
 
     use super::{without_provenance_mut, Result};
     use core::{
