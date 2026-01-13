@@ -690,7 +690,7 @@ mod windows {
             };
 
             // SAFETY: The caller must guarantee that `ptr` and `size` are in bounds of the
-            // allocation such that no other allocations can be affected. We are targetting our own
+            // allocation such that no other allocations can be affected. We are targeting our own
             // process, the pointer points to a valid and initialized memory location above, and
             // the size of 1 is correct as there is only one entry. This call is otherwise purely
             // an optimization hint and can't change program behavior.
@@ -917,7 +917,7 @@ fn addr(ptr: *const u8) -> usize {
 }
 
 // TODO: Replace this with `ptr::without_provenance_mut` once we release a breaking version.
-#[allow(clippy::useless_transmute)]
+#[allow(integer_to_ptr_transmutes, clippy::useless_transmute)]
 const fn without_provenance_mut(addr: usize) -> *mut u8 {
     // SAFETY: `usize` and `*mut u8` have the same layout.
     unsafe { mem::transmute::<usize, *mut u8>(addr) }
