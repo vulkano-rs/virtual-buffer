@@ -47,7 +47,7 @@
         };
         devShells.ci-msrv = let
           manifest = builtins.fromTOML (builtins.readFile ./Cargo.toml);
-          msrv = manifest.workspace.package.rust-version;
+          msrv = manifest.package.rust-version;
         in with pkgs; mkShell rec {
           buildInputs = [
             (rust-bin.stable.${msrv}.minimal.override {
