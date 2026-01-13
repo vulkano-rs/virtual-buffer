@@ -89,7 +89,7 @@ compile_error!("unsupported platform");
 use self::unix as sys;
 #[cfg(windows)]
 use self::windows as sys;
-use core::{fmt, mem};
+use core::fmt;
 
 pub mod vec;
 
@@ -254,13 +254,13 @@ impl Allocation {
         assert_ne!(self.size(), 0, "the allocation is dangling");
         assert_ne!(size, 0);
 
-        let allocated_range = addr(self.ptr())..addr(self.ptr()) + self.size();
-        let requested_range = addr(ptr)..addr(ptr).checked_add(size).unwrap();
+        let allocated_range = self.ptr().addr()..self.ptr().addr() + self.size();
+        let requested_range = ptr.addr()..ptr.addr().checked_add(size).unwrap();
         assert!(allocated_range.start <= requested_range.start);
         assert!(requested_range.end <= allocated_range.end);
 
         let page_size = page_size();
-        assert!(is_aligned(addr(ptr), page_size));
+        assert!(is_aligned(ptr.addr(), page_size));
         assert!(is_aligned(size, page_size));
     }
 }
@@ -346,7 +346,7 @@ impl std::error::Error for Error {}
 mod unix {
     #![allow(non_camel_case_types)]
 
-    use super::{without_provenance_mut, Result};
+    use super::Result;
     use core::{
         ffi::{c_char, c_int, c_void, CStr},
         fmt,
@@ -398,7 +398,7 @@ mod unix {
             Allocation {
                 // SAFETY: We checked that `alignment` is a power of two, which means it must be
                 // non-zero.
-                ptr: unsafe { NonNull::new_unchecked(without_provenance_mut(alignment).cast()) },
+                ptr: unsafe { NonNull::new_unchecked(ptr::without_provenance_mut(alignment)) },
                 size: 0,
             }
         }
@@ -583,7 +583,7 @@ mod unix {
 mod windows {
     #![allow(non_camel_case_types, non_snake_case, clippy::upper_case_acronyms)]
 
-    use super::{without_provenance_mut, Result};
+    use super::Result;
     use core::{
         ffi::c_void,
         fmt, mem,
@@ -633,7 +633,7 @@ mod windows {
             Allocation {
                 // SAFETY: We checked that `alignment` is a power of two, which means it must be
                 // non-zero.
-                ptr: unsafe { NonNull::new_unchecked(without_provenance_mut(alignment).cast()) },
+                ptr: unsafe { NonNull::new_unchecked(ptr::without_provenance_mut(alignment)) },
                 size: 0,
             }
         }
@@ -907,18 +907,4 @@ mod windows {
     const FORMAT_MESSAGE_IGNORE_INSERTS: u32 = 1 << 9;
 
     type HMODULE = *mut c_void;
-}
-
-// TODO: Replace this with `<*const u8>::addr` once we release a breaking version.
-#[allow(clippy::transmutes_expressible_as_ptr_casts)]
-fn addr(ptr: *const u8) -> usize {
-    // SAFETY: `*const u8` and `usize` have the same layout.
-    unsafe { mem::transmute::<*const u8, usize>(ptr) }
-}
-
-// TODO: Replace this with `ptr::without_provenance_mut` once we release a breaking version.
-#[allow(integer_to_ptr_transmutes, clippy::useless_transmute)]
-const fn without_provenance_mut(addr: usize) -> *mut u8 {
-    // SAFETY: `usize` and `*mut u8` have the same layout.
-    unsafe { mem::transmute::<usize, *mut u8>(addr) }
 }

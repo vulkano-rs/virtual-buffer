@@ -2,7 +2,6 @@
 
 use self::TryReserveErrorKind::{AllocError, CapacityOverflow};
 use super::{align_up, page_size, Allocation, Error};
-use crate::addr;
 use core::{
     borrow::{Borrow, BorrowMut},
     cmp, fmt,
@@ -788,7 +787,7 @@ impl<T> ExactSizeIterator for IntoIter<T> {
     #[inline]
     fn len(&self) -> usize {
         if T::IS_ZST {
-            addr(self.end.cast()).wrapping_sub(addr(self.start.cast()))
+            self.end.addr().wrapping_sub(self.start.addr())
         } else {
             // We know that the return value is positive because by our invariant, `self.end` is
             // always greater or equal to `self.start`.
