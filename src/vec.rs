@@ -521,8 +521,8 @@ impl<T: PartialEq<U>, U> PartialEq<Vec<U>> for [T] {
     }
 }
 
-#[cfg(feature = "std")]
-impl<T: PartialEq<U> + Clone, U> PartialEq<Vec<U>> for std::borrow::Cow<'_, [T]> {
+#[cfg(feature = "alloc")]
+impl<T: PartialEq<U> + Clone, U> PartialEq<Vec<U>> for alloc::borrow::Cow<'_, [T]> {
     #[inline]
     fn eq(&self, other: &Vec<U>) -> bool {
         **self == **other

@@ -20,4 +20,5 @@ windows-targets = "0.52"
 
 [features]
 default = ["std"]
-std = ["libc/std"]
+std = ["libc/std", "alloc"]
+alloc = []

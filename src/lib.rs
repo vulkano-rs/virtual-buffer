@@ -63,9 +63,10 @@
 //!
 //! # Cargo features
 //!
-//! | Feature | Description                      |
-//! |---------|----------------------------------|
-//! | std     | Enables the use of `std::borrow` |
+//! | Feature | Description                                         |
+//! |---------|-----------------------------------------------------|
+//! | std     | Enables `libc/std` and `alloc`. Enabled by default. |
+//! | alloc   | Enables the use of `alloc::borrow`.                 |
 //!
 //! [reserve]: self#reserving
 //! [committing]: self#committing
@@ -84,6 +85,9 @@
 
 #[cfg(not(any(unix, windows)))]
 compile_error!("unsupported platform");
+
+#[cfg(feature = "alloc")]
+extern crate alloc;
 
 #[cfg(unix)]
 use self::unix as sys;
