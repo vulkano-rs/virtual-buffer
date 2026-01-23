@@ -3,6 +3,7 @@
 use self::TryReserveErrorKind::{AllocError, CapacityOverflow};
 use crate::{align_up, page_size, Allocation, Error, SizedTypeProperties};
 use core::{
+    alloc::Layout,
     borrow::{Borrow, BorrowMut},
     cell::UnsafeCell,
     cmp, fmt,
@@ -63,7 +64,7 @@ impl<T> Vec<T> {
     ///
     /// # Panics
     ///
-    /// - Panics if the alignment of `T` is greater than the [page size].
+    /// - Panics if `align_of::<T>()` is greater than the [page size].
     /// - Panics if the `max_capacity` would exceed `isize::MAX` bytes.
     /// - Panics if [reserving] the `max_capacity` returns an error.
     ///
@@ -79,12 +80,11 @@ impl<T> Vec<T> {
 
     /// Creates a new `Vec`.
     ///
-    /// This function behaves the same as [`new`] except that it doesn't panic when allocation
-    /// fails.
+    /// Like [`new`], except returning an error when allocation fails.
     ///
     /// # Panics
     ///
-    /// Panics if the alignment of `T` is greater than the [page size].
+    /// Panics if `align_of::<T>()` is greater than the [page size].
     ///
     /// # Errors
     ///
@@ -720,9 +720,10 @@ impl<T> FusedIterator for IterMut<'_, T> {}
 ///
 /// [`into_iter`]: Vec::into_iter
 pub struct IntoIter<T> {
-    _allocation: Allocation,
     start: *mut (),
     end: *mut (),
+    #[allow(dead_code)]
+    allocation: Allocation,
     marker: PhantomData<T>,
 }
 
@@ -750,9 +751,9 @@ impl<T> IntoIter<T> {
         let end = unsafe { start.add(len) };
 
         IntoIter {
-            _allocation: allocation,
             start: start.cast(),
             end: end.cast(),
+            allocation,
             marker: PhantomData,
         }
     }
@@ -887,10 +888,11 @@ pub struct RawVec<T> {
 }
 
 struct RawVecInner {
-    allocation: Allocation,
+    elements: *mut (),
     max_capacity: usize,
     capacity: AtomicUsize,
     len: AtomicUsize,
+    allocation: Allocation,
 }
 
 impl<T> RawVec<T> {
@@ -907,25 +909,25 @@ impl<T> RawVec<T> {
     ///
     /// # Panics
     ///
-    /// - Panics if the alignment of `T` is greater than the [page size].
+    /// - Panics if `align_of::<T>()` is greater than the [page size].
     /// - Panics if the `max_capacity` would exceed `isize::MAX` bytes.
-    /// - Panics if [reserving] the `max_capacity` returns an error.
+    /// - Panics if [reserving] the allocation returns an error.
     ///
     /// [committed]: crate#committing
     /// [page size]: crate#pages
     /// [reserving]: crate#reserving
     #[must_use]
     pub unsafe fn new(max_capacity: usize) -> Self {
-        match unsafe { Self::try_new(max_capacity) } {
-            Ok(vec) => vec,
-            Err(err) => handle_error(err),
-        }
+        unsafe { Self::with_header(max_capacity, Layout::new::<()>()) }
     }
 
     /// Creates a new `RawVec`.
     ///
-    /// This function behaves the same as [`new`] except that it doesn't panic when allocation
-    /// fails.
+    /// Like [`new`], except additionally allocating a header. `align_up(header_layout.size(),
+    /// align_of::<T>())` bytes will be allocated before the start of the vector's elements, with
+    /// the start aligned to `header_layout.align()`. This means in particular that `header_layout`
+    /// is **not** padded to its alignment; do it yourself if that's what you need. You can use
+    /// [`as_ptr`] and offset backwards to access the header.
     ///
     /// # Safety
     ///
@@ -933,19 +935,82 @@ impl<T> RawVec<T> {
     ///
     /// # Panics
     ///
-    /// Panics if the alignment of `T` is greater than the [page size].
+    /// - Panics if `align_of::<T>()` is greater than the [page size].
+    /// - Panics if `header_layout.align()` is greater than the page size.
+    /// - Panics if the `max_capacity` would exceed `isize::MAX` bytes.
+    /// - Panics if [reserving] the allocation returns an error.
+    ///
+    /// [`new`]: Self::try_new
+    /// [`as_ptr`]: Self::as_ptr
+    /// [page size]: crate#pages
+    /// [reserving]: crate#reserving
+    #[must_use]
+    pub unsafe fn with_header(max_capacity: usize, header_layout: Layout) -> Self {
+        match unsafe { Self::try_with_header(max_capacity, header_layout) } {
+            Ok(vec) => vec,
+            Err(err) => handle_error(err),
+        }
+    }
+
+    /// Creates a new `RawVec`.
+    ///
+    /// Like [`new`], except returning an error when allocation fails.
+    ///
+    /// # Safety
+    ///
+    /// `T` must be zeroable.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `align_of::<T>()` is greater than the [page size].
     ///
     /// # Errors
     ///
     /// - Returns an error if the `max_capacity` would exceed `isize::MAX` bytes.
-    /// - Returns an error if [reserving] the `max_capacity` returns an error.
+    /// - Returns an error if [reserving] the allocation returns an error.
     ///
     /// [`new`]: Self::new
     /// [page size]: crate#pages
     /// [reserving]: crate#reserving
     pub unsafe fn try_new(max_capacity: usize) -> Result<Self, TryReserveError> {
+        unsafe { Self::try_with_header(max_capacity, Layout::new::<()>()) }
+    }
+
+    /// Creates a new `RawVec`.
+    ///
+    /// Like [`with_header`], except returning an error when allocation fails.
+    ///
+    /// # Safety
+    ///
+    /// `T` must be zeroable.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if `align_of::<T>()` is greater than the [page size].
+    /// - Panics if `header_layout.align()` is greater than the page size.
+    ///
+    /// # Errors
+    ///
+    /// - Returns an error if the `max_capacity` would exceed `isize::MAX` bytes.
+    /// - Returns an error if [reserving] the allocation returns an error.
+    ///
+    /// [`with_header`]: Self::with_header
+    /// [`as_ptr`]: Self::as_ptr
+    /// [page size]: crate#pages
+    /// [reserving]: crate#reserving
+    pub unsafe fn try_with_header(
+        max_capacity: usize,
+        header_layout: Layout,
+    ) -> Result<Self, TryReserveError> {
         Ok(RawVec {
-            inner: unsafe { RawVecInner::try_new(max_capacity, size_of::<T>(), align_of::<T>()) }?,
+            inner: unsafe {
+                RawVecInner::try_with_header(
+                    max_capacity,
+                    header_layout,
+                    size_of::<T>(),
+                    align_of::<T>(),
+                )
+            }?,
             marker: PhantomData,
         })
     }
@@ -991,14 +1056,14 @@ impl<T> RawVec<T> {
     #[inline]
     #[must_use]
     pub fn as_ptr(&self) -> *const T {
-        self.inner.allocation.ptr().cast()
+        self.inner.elements.cast()
     }
 
     /// Returns a mutable pointer to the vector's buffer.
     #[inline]
     #[must_use]
     pub fn as_mut_ptr(&mut self) -> *mut T {
-        self.inner.allocation.ptr().cast()
+        self.inner.elements.cast()
     }
 
     /// Returns the maximum capacity that was used when creating the `RawVec`.
@@ -1162,12 +1227,16 @@ impl<T> RawVec<T> {
 }
 
 impl RawVecInner {
-    unsafe fn try_new(
+    unsafe fn try_with_header(
         max_capacity: usize,
+        header_layout: Layout,
         elem_size: usize,
         elem_align: usize,
     ) -> Result<Self, TryReserveError> {
-        assert!(elem_align <= page_size());
+        let page_size = page_size();
+
+        assert!(elem_align <= page_size);
+        assert!(header_layout.align() <= page_size);
 
         let size = max_capacity
             .checked_mul(elem_size)
@@ -1178,17 +1247,49 @@ impl RawVecInner {
             return Err(CapacityOverflow.into());
         }
 
+        // This can't overflow because `Layout`'s size can't exceed `isize::MAX`.
+        let elements_offset = align_up(header_layout.size(), elem_align);
+
+        // This can't overflow because `elements_offset` can be at most `1 << 63` and `size` can be
+        // at most `isize::MAX`, totaling `usize::MAX`.
+        let size = elements_offset + size;
+
+        let size = align_up(size, page_size);
+
         if size == 0 {
+            // This checks for overflow coming from the preceding `align_up`. An overflow is not
+            // possible if `header_layout.size() == 0` because then `size` can be at most
+            // `isize::MAX` before aligning, which aligns to `1 << 63` at most.
+            if header_layout.size() != 0 {
+                return Err(CapacityOverflow.into());
+            }
+
             return Ok(Self::dangling(elem_align));
         }
 
-        let allocation = Allocation::new(align_up(size, page_size())).map_err(AllocError)?;
+        let allocation = Allocation::new(size).map_err(AllocError)?;
+        let initial_size = align_up(elements_offset, page_size);
+
+        if initial_size != 0 {
+            allocation
+                .commit(allocation.ptr(), initial_size)
+                .map_err(AllocError)?;
+        }
+
+        let elements = allocation.ptr().wrapping_add(elements_offset).cast();
+
+        let capacity = if elem_size == 0 {
+            0
+        } else {
+            (initial_size - elements_offset) / elem_size
+        };
 
         Ok(RawVecInner {
-            allocation,
+            elements,
             max_capacity,
-            capacity: AtomicUsize::new(0),
+            capacity: AtomicUsize::new(capacity),
             len: AtomicUsize::new(0),
+            allocation,
         })
     }
 
@@ -1197,10 +1298,11 @@ impl RawVecInner {
         let allocation = Allocation::dangling(elem_align);
 
         RawVecInner {
-            allocation,
+            elements: allocation.ptr().cast(),
             max_capacity: 0,
             capacity: AtomicUsize::new(0),
             len: AtomicUsize::new(0),
+            allocation,
         }
     }
 
@@ -1236,11 +1338,12 @@ impl RawVecInner {
             return Ok(());
         }
 
-        let old_size = old_capacity * elem_size;
-        let new_size = new_capacity * elem_size;
+        let elements_offset = self.elements.addr() - self.allocation.ptr().addr();
 
-        let old_size = align_up(old_size, page_size);
-        let new_size = align_up(new_size, page_size);
+        // These can't overflow because the size is already allocated.
+        let old_size = align_up(elements_offset + old_capacity * elem_size, page_size);
+        let new_size = align_up(elements_offset + new_capacity * elem_size, page_size);
+
         let ptr = self.allocation.ptr().wrapping_add(old_size);
         let size = new_size - old_size;
 
@@ -1256,27 +1359,6 @@ impl RawVecInner {
 
         Ok(())
     }
-}
-
-#[cold]
-fn handle_error(err: TryReserveError) -> ! {
-    match err.kind {
-        CapacityOverflow => capacity_overflow(),
-        AllocError(err) => handle_alloc_error(err),
-    }
-}
-
-#[inline(never)]
-fn capacity_overflow() -> ! {
-    panic!("capacity overflow");
-}
-
-// Dear Clippy, `Error` is 4 bytes.
-#[allow(clippy::needless_pass_by_value)]
-#[cold]
-#[inline(never)]
-fn handle_alloc_error(err: Error) -> ! {
-    panic!("allocation failed: {err}");
 }
 
 impl<T> AsRef<RawVec<T>> for RawVec<T> {
@@ -1529,6 +1611,27 @@ impl<T: Ord> Ord for RawVec<T> {
     fn cmp(&self, other: &Self) -> cmp::Ordering {
         Ord::cmp(&**self, &**other)
     }
+}
+
+#[cold]
+fn handle_error(err: TryReserveError) -> ! {
+    match err.kind {
+        CapacityOverflow => capacity_overflow(),
+        AllocError(err) => handle_alloc_error(err),
+    }
+}
+
+#[inline(never)]
+fn capacity_overflow() -> ! {
+    panic!("capacity overflow");
+}
+
+// Dear Clippy, `Error` is 4 bytes.
+#[allow(clippy::needless_pass_by_value)]
+#[cold]
+#[inline(never)]
+fn handle_alloc_error(err: Error) -> ! {
+    panic!("allocation failed: {err}");
 }
 
 /// Error that can happen when trying to [reserve] or [commit] memory for a [`Vec`].

@@ -8,53 +8,16 @@
 // impossible to implement for this crate's vec (such as various `From`-impls) or because they rely
 // on features that are unlikely to be stabilized anytime soon (specialization). Tests for methods
 // not yet implemented or tests that rely on unstable features have been commented out with block
-// comments. Some tests specific to this crate's vec were added (e.g., the stress-testing ones).
+// comments. Some tests specific to this crate's vec were added.
 //
 // [the Rust project]: https://github.com/rust-lang/rust/blob/f1586001ace26df7cafeb6534eaf76fb2c5513e5/library/alloc/tests/vec.rs
 
-use std::{fmt::Debug, hint, mem, panic::catch_unwind, sync::Barrier, thread};
-use virtual_buffer::concurrent::vec::{raw, IntoIter, RawVec, Vec};
-
-#[test]
-fn push_stress() {
-    const ITERATIONS: usize = if cfg!(miri) { 16 } else { 1_024 };
-    const THREADS: usize = 8;
-
-    let vec = &Vec::new(ITERATIONS);
-    let barrier = &Barrier::new(THREADS);
-
-    thread::scope(|s| {
-        for i in 0..THREADS {
-            s.spawn(move || {
-                barrier.wait();
-
-                for n in 1..=ITERATIONS / THREADS {
-                    vec.push(i * (ITERATIONS / THREADS) + n);
-                }
-            });
-        }
-    });
-
-    assert_eq!(
-        vec.into_iter().sum::<usize>(),
-        (ITERATIONS + 1) * ITERATIONS / 2,
-    );
-}
-
-#[test]
-fn push_mut_immut() {
-    let mut vec = Vec::new(5);
-
-    vec.push_mut(Box::new(1));
-
-    for x in 2..5 {
-        vec.push(Box::new(x));
-    }
-
-    vec.push_mut(Box::new(5));
-
-    assert_eq!(vec, [1, 2, 3, 4, 5].map(Box::new));
-}
+use std::{alloc::Layout, fmt::Debug, hint, mem, panic::catch_unwind, sync::Barrier, thread};
+use virtual_buffer::{
+    align_down,
+    concurrent::vec::{raw, IntoIter, RawVec, Vec},
+    page_size,
+};
 
 macro_rules! vec {
     () => {
@@ -144,6 +107,73 @@ macro_rules! raw_vec {
         *$vec.push_mut().1 = $x;
         raw_vec![@inner $vec, $($xs),+];
     };
+}
+
+#[test]
+fn push_stress() {
+    const ITERATIONS: usize = if cfg!(miri) { 100 } else { 1_000_000 };
+    const THREADS: usize = 10;
+
+    let vec = &Vec::new(ITERATIONS);
+    let barrier = &Barrier::new(THREADS);
+
+    thread::scope(|s| {
+        for i in 0..THREADS {
+            s.spawn(move || {
+                barrier.wait();
+
+                for n in 1..=ITERATIONS / THREADS {
+                    vec.push(i * (ITERATIONS / THREADS) + n);
+                }
+            });
+        }
+    });
+
+    assert_eq!(
+        vec.into_iter().sum::<usize>(),
+        (ITERATIONS + 1) * ITERATIONS / 2,
+    );
+}
+
+#[test]
+fn push_mut_immut() {
+    let mut vec = Vec::new(5);
+
+    vec.push_mut(Box::new(1));
+
+    for x in 2..5 {
+        vec.push(Box::new(x));
+    }
+
+    vec.push_mut(Box::new(5));
+
+    assert_eq!(vec, [1, 2, 3, 4, 5].map(Box::new));
+}
+
+#[test]
+fn header_alignment() {
+    for align_log2 in 0..12 {
+        let align = 1 << align_log2;
+        let header_layout = Layout::from_size_align(1, align).unwrap();
+        let vec = unsafe { RawVec::<i32>::with_header(1, header_layout) };
+        let addr = vec.as_ptr().addr();
+        assert_eq!(addr - align_of::<i32>(), align_down(addr, page_size()));
+    }
+}
+
+#[test]
+fn header_and_zero_max_capacity() {
+    let header_layout = Layout::new::<[u64; 8]>();
+    let vec = unsafe { RawVec::<i32>::with_header(0, header_layout) };
+    let addr = vec.as_ptr().addr();
+    assert_eq!(addr - size_of::<[u64; 8]>(), align_down(addr, page_size()));
+}
+
+#[test]
+#[should_panic = "capacity overflow"]
+fn oversized_header() {
+    let header_layout = Layout::from_size_align(isize::MAX as usize, 1).unwrap();
+    let _ = unsafe { RawVec::<u8>::with_header(isize::MAX as usize, header_layout) };
 }
 
 struct DropCounter<'a> {

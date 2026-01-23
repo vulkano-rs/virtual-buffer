@@ -6,12 +6,16 @@
 // Some tests were removed because they are testing features that are impossible to implement for
 // this crate's vec (such as various `From`-impls) or because they rely on features that are
 // unlikely to be stabilized anytime soon (specialization). Tests for methods not yet implemented
-// or tests that rely on unstable features have been commented out with block comments.
+// or tests that rely on unstable features have been commented out with block comments. Some tests
+// specific to this crate's vec were added.
 //
 // [the Rust project]: https://github.com/rust-lang/rust/blob/f1586001ace26df7cafeb6534eaf76fb2c5513e5/library/alloc/tests/vec.rs
 
-use std::{fmt::Debug, hint, mem, panic::catch_unwind};
-use virtual_buffer::vec::{IntoIter, Vec};
+use std::{alloc::Layout, fmt::Debug, hint, mem, panic::catch_unwind};
+use virtual_buffer::{
+    align_down, page_size,
+    vec::{IntoIter, Vec},
+};
 
 macro_rules! vec {
     () => {
@@ -41,6 +45,32 @@ macro_rules! vec {
         $vec.push($x);
         vec![@inner $vec, $($xs),+];
     };
+}
+
+#[test]
+fn header_alignment() {
+    for align_log2 in 0..12 {
+        let align = 1 << align_log2;
+        let header_layout = Layout::from_size_align(1, align).unwrap();
+        let vec = Vec::<i32>::with_header(1, header_layout);
+        let addr = vec.as_ptr().addr();
+        assert_eq!(addr - align_of::<i32>(), align_down(addr, page_size()));
+    }
+}
+
+#[test]
+fn header_and_zero_max_capacity() {
+    let header_layout = Layout::new::<[u64; 8]>();
+    let vec = Vec::<i32>::with_header(0, header_layout);
+    let addr = vec.as_ptr().addr();
+    assert_eq!(addr - size_of::<[u64; 8]>(), align_down(addr, page_size()));
+}
+
+#[test]
+#[should_panic = "capacity overflow"]
+fn oversized_header() {
+    let header_layout = Layout::from_size_align(isize::MAX as usize, 1).unwrap();
+    let _ = Vec::<u8>::with_header(isize::MAX as usize, header_layout);
 }
 
 struct DropCounter<'a> {

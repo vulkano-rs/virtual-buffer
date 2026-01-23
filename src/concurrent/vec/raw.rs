@@ -10,9 +10,10 @@ use core::{cmp, fmt, iter::FusedIterator, marker::PhantomData, mem::ManuallyDrop
 ///
 /// [`into_iter`]: RawVec::into_iter
 pub struct IntoIter<T> {
-    _allocation: Allocation,
     start: *const T,
     end: *const T,
+    #[allow(dead_code)]
+    allocation: Allocation,
     marker: PhantomData<T>,
 }
 
@@ -45,9 +46,9 @@ impl<T> IntoIter<T> {
         };
 
         IntoIter {
-            _allocation: allocation,
             start,
             end,
+            allocation,
             marker: PhantomData,
         }
     }
