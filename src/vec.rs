@@ -840,7 +840,7 @@ impl fmt::Display for TryReserveError {
 }
 
 impl core::error::Error for TryReserveError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match &self.kind {
             TryReserveErrorKind::CapacityOverflow => None,
             TryReserveErrorKind::AllocError(err) => Some(err),
