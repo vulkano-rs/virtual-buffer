@@ -11,6 +11,7 @@ use core::{
     marker::PhantomData,
     mem::ManuallyDrop,
     ops::{Deref, DerefMut, Index, IndexMut},
+    panic::UnwindSafe,
     ptr,
     slice::{self, SliceIndex},
 };
@@ -623,6 +624,9 @@ unsafe impl<T: Send> Send for IntoIter<T> {}
 
 // SAFETY: We own the collection, and synchronization to it is ensured using mutable references.
 unsafe impl<T: Sync> Sync for IntoIter<T> {}
+
+// We own the collection, so this should be no different than for `Vec`.
+impl<T: UnwindSafe> UnwindSafe for IntoIter<T> {}
 
 impl<T> IntoIter<T> {
     #[inline]

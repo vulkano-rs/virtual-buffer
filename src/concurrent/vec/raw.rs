@@ -2,7 +2,10 @@
 
 use super::RawVec;
 use crate::{Allocation, SizedTypeProperties};
-use core::{cmp, fmt, iter::FusedIterator, marker::PhantomData, mem::ManuallyDrop, ptr, slice};
+use core::{
+    cmp, fmt, iter::FusedIterator, marker::PhantomData, mem::ManuallyDrop, panic::UnwindSafe, ptr,
+    slice,
+};
 
 /// An iterator that moves out of a vector.
 ///
@@ -22,6 +25,9 @@ unsafe impl<T: Send> Send for IntoIter<T> {}
 
 // SAFETY: We own the collection, and synchronization to it is ensured using mutable references.
 unsafe impl<T: Sync> Sync for IntoIter<T> {}
+
+// We own the collection, so this should be no different than for `RawVec`.
+impl<T: UnwindSafe> UnwindSafe for IntoIter<T> {}
 
 impl<T> IntoIter<T> {
     #[inline]
