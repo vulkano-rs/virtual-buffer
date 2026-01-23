@@ -13,7 +13,8 @@
 //! for single-threaded use cases if reallocation is too expensive (say, tens to hundreds of MB).
 //! However, it's probably easier to use something like [`Vec::with_capacity`] in that case.
 //!
-//! See also [the `vec` module] for an implementation of a concurrent vector.
+//! See also [the `vec` module] for an implementation of a vector and [the `concurrent::vec`
+//! module] for an implementation of a concurrent vector.
 //!
 //! # Reserving
 //!
@@ -70,8 +71,8 @@
 //!
 //! [reserve]: self#reserving
 //! [committing]: self#committing
-//! [`Vec::with_capacity`]: https://doc.rust-lang.org/std/vec/struct.Vec.html#method.with_capacity
 //! [the `vec` module]: self::vec
+//! [the `concurrent::vec` module]: self::concurrent::vec
 //! [prefaulted]: self#prefaulting
 
 #![allow(
@@ -95,6 +96,7 @@ use self::unix as sys;
 use self::windows as sys;
 use core::fmt;
 
+pub mod concurrent;
 pub mod vec;
 
 /// An allocation backed by raw virtual memory, giving you the power to directly manipulate the
@@ -319,6 +321,12 @@ fn is_aligned(val: usize, alignment: usize) -> bool {
     val & (alignment - 1) == 0
 }
 
+trait SizedTypeProperties: Sized {
+    const IS_ZST: bool = size_of::<Self>() == 0;
+}
+
+impl<T> SizedTypeProperties for T {}
+
 /// The type returned by the various [`Allocation`] methods.
 pub type Result<T, E = Error> = ::core::result::Result<T, E>;
 
@@ -428,9 +436,8 @@ mod unix {
 
         #[cfg(miri)]
         pub unsafe fn commit(&self, _ptr: *mut c_void, _size: usize) -> Result<()> {
-            // Committing memory has no effect on the operational semantics, so there's nothing for
-            // Miri to test anyway except hitting a segmentation fault which is perfectly defined
-            // behavior.
+            // There is no equivalent to committing memory in the AM, so there's nothing for Miri
+            // to check here. The worst that can happen is an unintentional segfault.
             Ok(())
         }
 
@@ -453,9 +460,8 @@ mod unix {
 
         #[cfg(miri)]
         pub unsafe fn decommit(&self, _ptr: *mut c_void, _size: usize) -> Result<()> {
-            // Decommitting memory has no effect on the operational semantics, so there's nothing
-            // for Miri to test anyway except hitting a segmentation fault which is perfectly
-            // defined behavior.
+            // There is no equivalent to decommitting memory in the AM, so there's nothing for Miri
+            // to check here. The worst that can happen is an unintentional segfault.
             Ok(())
         }
 
@@ -491,6 +497,7 @@ mod unix {
         static PAGE_SIZE: AtomicUsize = AtomicUsize::new(0);
 
         #[cold]
+        #[inline(never)]
         fn page_size_slow() -> usize {
             let page_size = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGE_SIZE) }).unwrap();
             PAGE_SIZE.store(page_size, Ordering::Relaxed);
@@ -662,9 +669,8 @@ mod windows {
 
         #[cfg(miri)]
         pub unsafe fn commit(&self, _ptr: *mut c_void, _size: usize) -> Result<()> {
-            // Committing memory has no effect on the operational semantics, so there's nothing for
-            // Miri to test anyway except hitting a segmentation fault which is perfectly defined
-            // behavior.
+            // There is no equivalent to committing memory in the AM, so there's nothing for Miri
+            // to check here. The worst that can happen is an unintentional segfault.
             Ok(())
         }
 
@@ -679,9 +685,8 @@ mod windows {
 
         #[cfg(miri)]
         pub unsafe fn decommit(&self, _ptr: *mut c_void, _size: usize) -> Result<()> {
-            // Decommitting memory has no effect on the operational semantics, so there's nothing
-            // for Miri to test anyway except hitting a segmentation fault which is perfectly
-            // defined behavior.
+            // There is no equivalent to decommitting memory in the AM, so there's nothing for Miri
+            // to check here. The worst that can happen is an unintentional segfault.
             Ok(())
         }
 
@@ -723,6 +728,7 @@ mod windows {
         static PAGE_SIZE: AtomicUsize = AtomicUsize::new(0);
 
         #[cold]
+        #[inline(never)]
         fn page_size_slow() -> usize {
             // SAFETY: `SYSTEM_INFO` is composed only of primitive types.
             let mut system_info = unsafe { mem::zeroed() };

@@ -1,55 +1,34 @@
-//! A concurrent, in-place growable vector.
+//! An in-place growable vector.
 
 use self::TryReserveErrorKind::{AllocError, CapacityOverflow};
-use super::{align_up, page_size, Allocation, Error};
+use crate::{align_up, page_size, Allocation, Error, SizedTypeProperties};
 use core::{
     borrow::{Borrow, BorrowMut},
     cmp, fmt,
     hash::{Hash, Hasher},
-    hint,
     iter::FusedIterator,
     marker::PhantomData,
-    mem::{self, ManuallyDrop},
+    mem::ManuallyDrop,
     ops::{Deref, DerefMut, Index, IndexMut},
     ptr,
     slice::{self, SliceIndex},
-    sync::atomic::{
-        AtomicUsize,
-        Ordering::{Acquire, Relaxed, Release},
-    },
 };
 
-/// A concurrent, in-place growable vector.
+/// An in-place growable vector.
 ///
 /// This type behaves identically to the standard library `Vec` except that it is guaranteed to
-/// never reallocate, and as such can support concurrent reads while also supporting growth. Reads
-/// are always wait-free; however, pushing is not, as it acts sort of like a spinlock.
+/// never reallocate.
 pub struct Vec<T> {
-    allocation: Allocation,
-    max_capacity: usize,
-    capacity: AtomicUsize,
-    len: AtomicUsize,
-    reserved_len: AtomicUsize,
-    /// ```compile_fail,E0597
-    /// let vec = virtual_buffer::vec::Vec::<&'static str>::new(1);
-    /// {
-    ///     let s = "oh no".to_owned();
-    ///     vec.push(&s);
-    /// }
-    /// dbg!(vec);
-    /// ```
-    marker: PhantomData<(T, fn(T))>,
+    inner: VecInner,
+    marker: PhantomData<T>,
 }
 
-// SAFETY: `Vec` is an owned collection, which makes it safe to send to another a thread as long as
-// its element is safe to send to another a thread.
-unsafe impl<T: Send> Send for Vec<T> {}
-
-// SAFETY: `Vec` allows pushing through a shared reference, which allows a shared `Vec` to be used
-// to send elements to another thread. Additionally, `Vec` allows getting a reference to any
-// element from any thread. Therefore, it is safe to share `Vec` between threads as long as the
-// element is both sendable and shareable.
-unsafe impl<T: Send + Sync> Sync for Vec<T> {}
+struct VecInner {
+    allocation: Allocation,
+    max_capacity: usize,
+    capacity: usize,
+    len: usize,
+}
 
 impl<T> Vec<T> {
     /// Creates a new `Vec`.
@@ -61,13 +40,19 @@ impl<T> Vec<T> {
     ///
     /// # Panics
     ///
-    /// Panics if the alignment of `T` is greater than the [page size].
+    /// - Panics if the alignment of `T` is greater than the [page size].
+    /// - Panics if the `max_capacity` would exceed `isize::MAX` bytes.
+    /// - Panics if [reserving] the `max_capacity` returns an error.
     ///
-    /// [committed]: super#committing
-    /// [page size]: super#pages
+    /// [committed]: crate#committing
+    /// [page size]: crate#pages
+    /// [reserving]: crate#reserving
     #[must_use]
     pub fn new(max_capacity: usize) -> Self {
-        handle_reserve(Self::try_new(max_capacity))
+        match Self::try_new(max_capacity) {
+            Ok(vec) => vec,
+            Err(err) => handle_error(err),
+        }
     }
 
     /// Creates a new `Vec`.
@@ -75,43 +60,21 @@ impl<T> Vec<T> {
     /// This function behaves the same as [`new`] except that it doesn't panic when allocation
     /// fails.
     ///
-    /// # Errors
-    ///
-    /// Returns an error when the operating system returns an error.
-    ///
     /// # Panics
     ///
     /// Panics if the alignment of `T` is greater than the [page size].
     ///
+    /// # Errors
+    ///
+    /// - Returns an error if the `max_capacity` would exceed `isize::MAX` bytes.
+    /// - Returns an error if [reserving] the `max_capacity` returns an error.
+    ///
     /// [`new`]: Self::new
-    /// [page size]: super#pages
+    /// [page size]: crate#pages
+    /// [reserving]: crate#reserving
     pub fn try_new(max_capacity: usize) -> Result<Self, TryReserveError> {
-        assert!(mem::align_of::<T>() <= page_size());
-
-        let size = align_up(
-            max_capacity
-                .checked_mul(mem::size_of::<T>())
-                .ok_or(CapacityOverflow)?,
-            page_size(),
-        );
-
-        #[allow(clippy::cast_possible_wrap)]
-        if size > isize::MAX as usize {
-            return Err(CapacityOverflow.into());
-        }
-
-        if size == 0 {
-            return Ok(Self::dangling(max_capacity));
-        }
-
-        let allocation = Allocation::new(size).map_err(AllocError)?;
-
         Ok(Vec {
-            allocation,
-            max_capacity,
-            capacity: AtomicUsize::new(0),
-            len: AtomicUsize::new(0),
-            reserved_len: AtomicUsize::new(0),
+            inner: unsafe { VecInner::try_new(max_capacity, size_of::<T>(), align_of::<T>()) }?,
             marker: PhantomData,
         })
     }
@@ -120,95 +83,68 @@ impl<T> Vec<T> {
     ///
     /// This is useful as a placeholder value to defer allocation until later or if no allocation
     /// is needed.
-    ///
-    /// `max_capacity` is the maximum capacity the vector can ever have. The vector is guaranteed
-    /// to never exceed this capacity.
     #[inline]
     #[must_use]
-    pub const fn dangling(max_capacity: usize) -> Self {
-        let allocation = Allocation::dangling(mem::align_of::<T>());
-
+    pub const fn dangling() -> Self {
         Vec {
-            allocation,
-            max_capacity,
-            capacity: AtomicUsize::new(0),
-            len: AtomicUsize::new(0),
-            reserved_len: AtomicUsize::new(0),
+            inner: VecInner::dangling(align_of::<T>()),
             marker: PhantomData,
         }
     }
 
     /// Returns a slice of the entire vector.
-    #[inline(always)]
+    #[inline]
     #[must_use]
     pub fn as_slice(&self) -> &[T] {
-        let len = self.len.load(Acquire);
-
-        // SAFETY: The modifier of `self.len` ensures that it is only done after writing the new
-        // elements and that said writes have been synchronized. The `Acquire` ordering above
-        // synchronizes with the `Release` ordering when setting the len, making sure that the
-        // write is visible here.
-        unsafe { slice::from_raw_parts(self.as_ptr(), len) }
+        unsafe { slice::from_raw_parts(self.as_ptr(), self.len()) }
     }
 
     /// Returns a mutable slice of the entire vector.
-    #[inline(always)]
+    #[inline]
     #[must_use]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
-        let len = self.len_mut();
-
-        // SAFETY: The modifier of `self.len` ensures that it is only done after writing the new
-        // elements and that said writes have been synchronized. The mutable reference ensures
-        // synchronization in this case.
-        unsafe { slice::from_raw_parts_mut(self.as_mut_ptr(), len) }
+        unsafe { slice::from_raw_parts_mut(self.as_mut_ptr(), self.len()) }
     }
 
     /// Returns a pointer to the vector's buffer.
-    #[inline(always)]
+    #[inline]
     #[must_use]
     pub fn as_ptr(&self) -> *const T {
-        self.allocation.ptr().cast()
+        self.inner.allocation.ptr().cast()
     }
 
     /// Returns a mutable pointer to the vector's buffer.
-    #[inline(always)]
+    #[inline]
     #[must_use]
     pub fn as_mut_ptr(&mut self) -> *mut T {
-        self.allocation.ptr().cast()
+        self.inner.allocation.ptr().cast()
+    }
+
+    /// Returns the maximum capacity that was used when creating the `Vec`.
+    #[inline]
+    #[must_use]
+    pub fn max_capacity(&self) -> usize {
+        self.inner.max_capacity
     }
 
     /// Returns the total number of elements the vector can hold without [committing] more memory.
     ///
-    /// [committing]: super#committing
-    #[inline(always)]
+    /// [committing]: crate#committing
+    #[inline]
     #[must_use]
     pub fn capacity(&self) -> usize {
         if T::IS_ZST {
             usize::MAX
         } else {
-            self.capacity.load(Relaxed)
-        }
-    }
-
-    #[inline(always)]
-    fn capacity_mut(&mut self) -> usize {
-        if T::IS_ZST {
-            usize::MAX
-        } else {
-            *self.capacity.get_mut()
+            self.inner.capacity
         }
     }
 
     /// Returns the number of elements in the vector.
-    #[inline(always)]
+    #[inline]
     #[must_use]
     pub fn len(&self) -> usize {
-        self.len.load(Relaxed)
-    }
-
-    #[inline(always)]
-    fn len_mut(&mut self) -> usize {
-        *self.len.get_mut()
+        self.inner.len
     }
 
     /// Returns `true` if the vector contains no elements.
@@ -218,159 +154,119 @@ impl<T> Vec<T> {
         self.len() == 0
     }
 
-    /// Appends an element to the end of the vector. Returns the index of the inserted element.
+    /// Appends an element to the end of the vector.
     #[inline]
-    pub fn push(&self, value: T) -> usize {
-        if T::IS_ZST {
-            let mut len = self.len();
+    pub fn push(&mut self, value: T) {
+        let len = self.len();
 
-            loop {
-                if len == usize::MAX {
-                    capacity_overflow();
-                }
-
-                match self.len.compare_exchange(len, len + 1, Relaxed, Relaxed) {
-                    Ok(_) => return len,
-                    Err(new_len) => len = new_len,
-                }
-            }
+        if len == self.capacity() {
+            self.grow_one();
         }
 
-        // This cannot overflow because our capacity can never exceed `isize::MAX` bytes, and
-        // because `self.reserve_for_push()` resets `self.reserved_len` back to `self.max_capacity`
-        // if it was overshot.
-        let reserved_len = self.reserved_len.fetch_add(1, Relaxed);
-
-        if reserved_len >= self.capacity() {
-            self.reserve_for_push(reserved_len);
-        }
-
-        // SAFETY: We made sure that the index is in bounds above. We reserved an index by
-        // incrementing `self.reserved_len`, which means that no other threads can be attempting to
-        // write to this same index.
-        unsafe { self.as_ptr().cast_mut().add(reserved_len).write(value) };
-
-        let mut backoff = Backoff::new();
-
-        loop {
-            // SAFETY: We have written the element, and synchronize said write with any future
-            // readers by using the `Release` ordering.
-            match unsafe {
-                self.len
-                    .compare_exchange_weak(reserved_len, reserved_len + 1, Release, Relaxed)
-            } {
-                Ok(_) => break,
-                Err(_) => backoff.spin(),
-            }
-        }
-
-        reserved_len
-    }
-
-    /// Appends an element to the end of the vector. Returns the index of the inserted element.
-    #[inline]
-    pub fn push_mut(&mut self, value: T) -> usize {
-        let len = self.len_mut();
-
-        if len >= self.capacity_mut() {
-            self.reserve_for_push(len);
-        }
-
-        // SAFETY: We made sure the index is in bounds above.
+        // SAFETY: We made sure that the index is in bounds above.
         unsafe { self.as_mut_ptr().add(len).write(value) };
 
-        // SAFETY: We have written the element.
-        unsafe { *self.len.get_mut() += 1 };
-
-        *self.reserved_len.get_mut() = self.len_mut();
-
-        len
+        // SAFETY: We have written the element above.
+        unsafe { self.inner.len += 1 };
     }
 
     #[inline(never)]
-    fn reserve_for_push(&self, len: usize) {
-        handle_reserve(self.grow_amortized(len, 1));
+    fn grow_one(&mut self) {
+        if let Err(err) = unsafe { self.inner.grow_amortized(1, size_of::<T>()) } {
+            handle_error(err);
+        }
+    }
+}
+
+impl VecInner {
+    unsafe fn try_new(
+        max_capacity: usize,
+        elem_size: usize,
+        elem_align: usize,
+    ) -> Result<Self, TryReserveError> {
+        assert!(elem_align <= page_size());
+
+        let size = max_capacity
+            .checked_mul(elem_size)
+            .ok_or(CapacityOverflow)?;
+
+        #[allow(clippy::cast_possible_wrap)]
+        if size > isize::MAX as usize {
+            return Err(CapacityOverflow.into());
+        }
+
+        if size == 0 {
+            return Ok(Self::dangling(elem_align));
+        }
+
+        let allocation = Allocation::new(align_up(size, page_size())).map_err(AllocError)?;
+
+        Ok(VecInner {
+            allocation,
+            max_capacity,
+            capacity: 0,
+            len: 0,
+        })
+    }
+
+    #[inline]
+    const fn dangling(elem_align: usize) -> Self {
+        let allocation = Allocation::dangling(elem_align);
+
+        VecInner {
+            allocation,
+            max_capacity: 0,
+            capacity: 0,
+            len: 0,
+        }
     }
 
     // TODO: What's there to amortize over? It should be linear growth.
-    fn grow_amortized(&self, len: usize, additional: usize) -> Result<(), TryReserveError> {
+    unsafe fn grow_amortized(
+        &mut self,
+        additional: usize,
+        elem_size: usize,
+    ) -> Result<(), TryReserveError> {
         debug_assert!(additional > 0);
 
-        if T::IS_ZST {
+        if elem_size == 0 {
             return Err(CapacityOverflow.into());
         }
 
-        let required_capacity = len.checked_add(additional).ok_or(CapacityOverflow)?;
+        let required_capacity = self.len.checked_add(additional).ok_or(CapacityOverflow)?;
 
         if required_capacity > self.max_capacity {
-            if self.reserved_len.load(Relaxed) > self.max_capacity {
-                self.reserved_len.store(self.max_capacity, Relaxed);
-            }
-
             return Err(CapacityOverflow.into());
         }
 
-        let new_capacity = cmp::max(self.capacity() * 2, required_capacity);
-        let new_capacity = cmp::max(new_capacity, page_size() / mem::size_of::<T>());
+        let old_capacity = self.capacity;
+        let page_size = page_size();
+
+        let new_capacity = cmp::max(old_capacity * 2, required_capacity);
+        let new_capacity = cmp::max(new_capacity, page_size / elem_size);
         let new_capacity = cmp::min(new_capacity, self.max_capacity);
 
-        grow(
-            &self.allocation,
-            &self.capacity,
-            new_capacity,
-            mem::size_of::<T>(),
-        )
+        let old_size = old_capacity * elem_size;
+        let new_size = new_capacity * elem_size;
+
+        let old_size = align_up(old_size, page_size);
+        let new_size = align_up(new_size, page_size);
+        let ptr = self.allocation.ptr().wrapping_add(old_size);
+        let size = new_size - old_size;
+
+        self.allocation.commit(ptr, size).map_err(AllocError)?;
+
+        self.capacity = new_capacity;
+
+        Ok(())
     }
 }
 
-#[inline(never)]
-fn grow(
-    allocation: &Allocation,
-    capacity: &AtomicUsize,
-    new_capacity: usize,
-    element_size: usize,
-) -> Result<(), TryReserveError> {
-    let old_capacity = capacity.load(Relaxed);
-
-    if old_capacity == new_capacity {
-        // Another thread beat us to it.
-        return Ok(());
-    }
-
-    let page_size = page_size();
-
-    let old_size = old_capacity * element_size;
-    let new_size = new_capacity
-        .checked_mul(element_size)
-        .ok_or(CapacityOverflow)?;
-
-    if new_size > allocation.size() {
-        return Err(CapacityOverflow.into());
-    }
-
-    let old_size = align_up(old_size, page_size);
-    let new_size = align_up(new_size, page_size);
-    let ptr = allocation.ptr().wrapping_add(old_size);
-    let size = new_size - old_size;
-
-    allocation.commit(ptr, size).map_err(AllocError)?;
-
-    let _ = allocation.prefault(ptr, size);
-
-    if let Err(capacity) = capacity.compare_exchange(old_capacity, new_capacity, Relaxed, Relaxed) {
-        // We lost the race, but the winner must have updated the capacity same as we wanted to.
-        assert!(capacity >= new_capacity);
-    }
-
-    Ok(())
-}
-
-#[inline]
-fn handle_reserve<T>(res: Result<T, TryReserveError>) -> T {
-    match res.map_err(|e| e.kind) {
-        Ok(x) => x,
-        Err(CapacityOverflow) => capacity_overflow(),
-        Err(AllocError(err)) => handle_alloc_error(err),
+#[cold]
+fn handle_error(err: TryReserveError) -> ! {
+    match err.kind {
+        CapacityOverflow => capacity_overflow(),
+        AllocError(err) => handle_alloc_error(err),
     }
 }
 
@@ -382,6 +278,7 @@ fn capacity_overflow() -> ! {
 // Dear Clippy, `Error` is 4 bytes.
 #[allow(clippy::needless_pass_by_value)]
 #[cold]
+#[inline(never)]
 fn handle_alloc_error(err: Error) -> ! {
     panic!("allocation failed: {err}");
 }
@@ -431,10 +328,10 @@ impl<T> BorrowMut<[T]> for Vec<T> {
 impl<T: Clone> Clone for Vec<T> {
     #[inline]
     fn clone(&self) -> Self {
-        let mut vec = Vec::new(self.max_capacity);
+        let mut vec = Vec::new(self.inner.max_capacity);
 
         for elem in self {
-            vec.push_mut(elem.clone());
+            vec.push(elem.clone());
         }
 
         vec
@@ -465,9 +362,10 @@ impl<T> DerefMut for Vec<T> {
 
 impl<T> Drop for Vec<T> {
     fn drop(&mut self) {
-        let elements = ptr::slice_from_raw_parts_mut(self.as_mut_ptr(), self.len_mut());
+        let elements = ptr::slice_from_raw_parts_mut(self.as_mut_ptr(), self.len());
 
-        // SAFETY: This is the drop implementation. This would be the place to drop the elements.
+        // SAFETY: We own the collection, and it is being dropped, which ensures that the elements
+        // can't be accessed again.
         unsafe { elements.drop_in_place() };
     }
 }
@@ -549,7 +447,7 @@ impl<T> Extend<T> for Vec<T> {
     #[inline]
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         for elem in iter {
-            self.push_mut(elem);
+            self.push(elem);
         }
     }
 }
@@ -558,7 +456,7 @@ impl<'a, T: Copy> Extend<&'a T> for Vec<T> {
     #[inline]
     fn extend<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
         for &elem in iter {
-            self.push_mut(elem);
+            self.push(elem);
         }
     }
 }
@@ -615,29 +513,7 @@ impl<T> IntoIterator for Vec<T> {
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
-        let mut this = ManuallyDrop::new(self);
-
-        // SAFETY: `this` is wrapped in a `ManuallyDrop` such that a double-free can't happen, even
-        // if a panic was possible below.
-        let allocation = unsafe { ptr::read(&this.allocation) };
-
-        let start = this.as_mut_ptr();
-
-        let end = if T::IS_ZST {
-            start.cast::<u8>().wrapping_add(this.len_mut()).cast::<T>()
-        } else {
-            // SAFETY: The modifier of `self.len` ensures that it is only done after writing the new
-            // elements and that said writes have been synchronized. The ownership ensures
-            // synchronization in this case.
-            unsafe { start.add(this.len_mut()) }
-        };
-
-        IntoIter {
-            _allocation: allocation,
-            start,
-            end,
-            marker: PhantomData,
-        }
+        IntoIter::new(self)
     }
 }
 
@@ -674,6 +550,32 @@ unsafe impl<T: Send> Send for IntoIter<T> {}
 unsafe impl<T: Sync> Sync for IntoIter<T> {}
 
 impl<T> IntoIter<T> {
+    #[inline]
+    fn new(vec: Vec<T>) -> Self {
+        let mut vec = ManuallyDrop::new(vec);
+
+        // SAFETY: `vec` is wrapped in a `ManuallyDrop` such that a double-free can't happen even
+        // if a panic was possible below.
+        let allocation = unsafe { ptr::read(&vec.inner.allocation) };
+
+        let start = vec.as_mut_ptr();
+
+        let end = if T::IS_ZST {
+            start.cast::<u8>().wrapping_add(vec.len()).cast::<T>()
+        } else {
+            // SAFETY: The modifier of `vec.inner.len` ensures that it is only done after writing
+            // the new elements.
+            unsafe { start.add(vec.len()) }
+        };
+
+        IntoIter {
+            _allocation: allocation,
+            start,
+            end,
+            marker: PhantomData,
+        }
+    }
+
     /// Returns the remaining items of this iterator as a slice.
     #[inline]
     #[must_use]
@@ -713,7 +615,7 @@ impl<T> Drop for IntoIter<T> {
     fn drop(&mut self) {
         let elements = ptr::slice_from_raw_parts_mut(self.start.cast_mut(), self.len());
 
-        // SAFETY: We own the collection, and it is being dropped which ensures that the elements
+        // SAFETY: We own the collection, and it is being dropped, which ensures that the elements
         // can't be accessed again.
         unsafe { elements.drop_in_place() };
     }
@@ -793,7 +695,7 @@ impl<T> ExactSizeIterator for IntoIter<T> {
             // always greater or equal to `self.start`.
             #[allow(clippy::cast_sign_loss)]
             // SAFETY:
-            // * `start` and `end` were both created from the same object in `Vec::into_iter`.
+            // * `start` and `end` were both created from the same object in `IntoIter::new`.
             // * `Vec::new` ensures that the allocation size doesn't exceed `isize::MAX` bytes.
             // * We know that the allocation doesn't wrap around the address space.
             unsafe {
@@ -807,8 +709,8 @@ impl<T> FusedIterator for IntoIter<T> {}
 
 /// Error that can happen when trying to [reserve] or [commit] memory for a [`Vec`].
 ///
-/// [reserve]: super#reserving
-/// [commit]: super#committing
+/// [reserve]: crate#reserving
+/// [commit]: crate#committing
 #[derive(Debug)]
 pub struct TryReserveError {
     kind: TryReserveErrorKind,
@@ -846,34 +748,6 @@ impl core::error::Error for TryReserveError {
         match &self.kind {
             TryReserveErrorKind::CapacityOverflow => None,
             TryReserveErrorKind::AllocError(err) => Some(err),
-        }
-    }
-}
-
-trait SizedTypeProperties: Sized {
-    const IS_ZST: bool = mem::size_of::<Self>() == 0;
-}
-
-impl<T> SizedTypeProperties for T {}
-
-const SPIN_LIMIT: u32 = 6;
-
-struct Backoff {
-    step: u32,
-}
-
-impl Backoff {
-    fn new() -> Self {
-        Backoff { step: 0 }
-    }
-
-    fn spin(&mut self) {
-        for _ in 0..1 << self.step {
-            hint::spin_loop();
-        }
-
-        if self.step <= SPIN_LIMIT {
-            self.step += 1;
         }
     }
 }

@@ -3,24 +3,95 @@
 // * MIT license (LICENSE-MIT or http://opensource.org/licenses/MIT)
 // at your option.
 //
-// Only minor changes were made to make the tests work with this crate's API, such as changing
-// `Vec::push` to `Vec::push_mut`. Some tests were removed because they are testing features that
-// are impossible to implement for this crate's vec (such as various `From`-impls) or because they
-// rely on features that are unlikely to be stabilized anytime soon (specialization). Tests for
-// methods not yet implemented or tests that rely on unstable features have been commented out with
-// block comments.
+// The tests were adapted to the concurrent `Vec` methods, the mutable `Vec` methods, as well as
+// the `RawVec` methods. Some tests were removed because they are testing features that are
+// impossible to implement for this crate's vec (such as various `From`-impls) or because they rely
+// on features that are unlikely to be stabilized anytime soon (specialization). Tests for methods
+// not yet implemented or tests that rely on unstable features have been commented out with block
+// comments. Some tests specific to this crate's vec were added (e.g., the stress-testing ones).
 //
 // [the Rust project]: https://github.com/rust-lang/rust/blob/f1586001ace26df7cafeb6534eaf76fb2c5513e5/library/alloc/tests/vec.rs
 
-use std::{fmt::Debug, hint, mem, panic::catch_unwind};
-use virtual_buffer::vec::{IntoIter, Vec};
+use std::{fmt::Debug, hint, mem, panic::catch_unwind, sync::Barrier, thread};
+use virtual_buffer::concurrent::vec::{raw, IntoIter, RawVec, Vec};
+
+#[test]
+fn push_stress() {
+    const ITERATIONS: usize = if cfg!(miri) { 16 } else { 1_024 };
+    const THREADS: usize = 8;
+
+    let vec = &Vec::new(ITERATIONS);
+    let barrier = &Barrier::new(THREADS);
+
+    thread::scope(|s| {
+        for i in 0..THREADS {
+            s.spawn(move || {
+                barrier.wait();
+
+                for n in 1..=ITERATIONS / THREADS {
+                    vec.push(i * (ITERATIONS / THREADS) + n);
+                }
+            });
+        }
+    });
+
+    assert_eq!(
+        vec.into_iter().sum::<usize>(),
+        (ITERATIONS + 1) * ITERATIONS / 2,
+    );
+}
+
+#[test]
+fn push_mut_immut() {
+    let mut vec = Vec::new(5);
+
+    vec.push_mut(Box::new(1));
+
+    for x in 2..5 {
+        vec.push(Box::new(x));
+    }
+
+    vec.push_mut(Box::new(5));
+
+    assert_eq!(vec, [1, 2, 3, 4, 5].map(Box::new));
+}
 
 macro_rules! vec {
     () => {
-        ::virtual_buffer::vec::Vec::new(100)
+        ::virtual_buffer::concurrent::vec::Vec::new(100)
     };
     ($elem:expr; $n:expr) => {{
-        let mut vec = vec![];
+        let vec = vec![];
+        let elem = $elem;
+
+        #[allow(clippy::reversed_empty_ranges)]
+        for _ in 0usize..$n {
+            vec.push(elem.clone());
+        }
+
+        vec
+    }};
+    ($($x:expr),+ $(,)?) => {{
+        let vec = vec![];
+        vec![@inner vec, $($x),+];
+
+        vec
+    }};
+    (@inner $vec:ident, $x:expr) => {
+        $vec.push($x);
+    };
+    (@inner $vec:ident, $x:expr, $($xs:expr),+) => {
+        $vec.push($x);
+        vec![@inner $vec, $($xs),+];
+    };
+}
+
+macro_rules! vec_mut {
+    () => {
+        ::virtual_buffer::concurrent::vec::Vec::new(100)
+    };
+    ($elem:expr; $n:expr) => {{
+        let mut vec = vec_mut![];
         let elem = $elem;
 
         #[allow(clippy::reversed_empty_ranges)]
@@ -31,8 +102,8 @@ macro_rules! vec {
         vec
     }};
     ($($x:expr),+ $(,)?) => {{
-        let mut vec = vec![];
-        vec![@inner vec, $($x),+];
+        let mut vec = vec_mut![];
+        vec_mut![@inner vec, $($x),+];
 
         vec
     }};
@@ -41,7 +112,37 @@ macro_rules! vec {
     };
     (@inner $vec:ident, $x:expr, $($xs:expr),+) => {
         $vec.push_mut($x);
-        vec![@inner $vec, $($xs),+];
+        vec_mut![@inner $vec, $($xs),+];
+    };
+}
+
+macro_rules! raw_vec {
+    () => {
+        ::virtual_buffer::concurrent::vec::RawVec::new(100)
+    };
+    ($elem:expr; $n:expr) => {{
+        let mut vec = raw_vec![];
+        let elem = $elem;
+
+        #[allow(clippy::reversed_empty_ranges)]
+        for _ in 0usize..$n {
+            *vec.push_mut().1 = elem.clone();
+        }
+
+        vec
+    }};
+    ($($x:expr),+ $(,)?) => {{
+        let mut vec = raw_vec![];
+        raw_vec![@inner vec, $($x),+];
+
+        vec
+    }};
+    (@inner $vec:ident, $x:expr) => {
+        *$vec.push_mut().1 = $x;
+    };
+    (@inner $vec:ident, $x:expr, $($xs:expr),+) => {
+        *$vec.push_mut().1 = $x;
+        raw_vec![@inner $vec, $($xs),+];
     };
 }
 
@@ -64,14 +165,14 @@ fn test_double_drop() {
 
     let (mut count_x, mut count_y) = (0, 0);
     {
-        let mut tv = TwoVec {
+        let tv = TwoVec {
             x: vec![],
             y: vec![],
         };
-        tv.x.push_mut(DropCounter {
+        tv.x.push(DropCounter {
             count: &mut count_x,
         });
-        tv.y.push_mut(DropCounter {
+        tv.y.push(DropCounter {
             count: &mut count_y,
         });
 
@@ -97,14 +198,14 @@ fn test_reserve() {
     assert!(v.capacity() >= 2);
 
     for i in 0..16 {
-        v.push_mut(i);
+        v.push(i);
     }
 
     assert!(v.capacity() >= 16);
     v.reserve(16);
     assert!(v.capacity() >= 32);
 
-    v.push_mut(16);
+    v.push(16);
 
     v.reserve(16);
     assert!(v.capacity() >= 33)
@@ -113,7 +214,7 @@ fn test_reserve() {
 
 #[test]
 fn test_zst_capacity() {
-    assert_eq!(Vec::<()>::new(0).capacity(), usize::MAX);
+    assert_eq!(unsafe { RawVec::<()>::new(0) }.capacity(), usize::MAX);
 }
 
 #[test]
@@ -135,15 +236,20 @@ fn test_debug_fmt() {
     assert_eq!("[]", format!("{:?}", vec1));
 
     let vec2 = vec![0, 1];
-    assert_eq!("[0, 1]", format!("{:?}", vec2));
-
-    let slice: &[isize] = &[4, 5];
-    assert_eq!("[4, 5]", format!("{slice:?}"));
+    assert_eq!("[Some(0), Some(1)]", format!("{:?}", vec2));
 }
 
 #[test]
 fn test_push() {
-    let mut v = vec![];
+    let v = vec![];
+    v.push(1);
+    assert_eq!(v, [1]);
+    v.push(2);
+    assert_eq!(v, [1, 2]);
+    v.push(3);
+    assert_eq!(v, [1, 2, 3]);
+
+    let mut v = vec_mut![];
     v.push_mut(1);
     assert_eq!(v, [1]);
     v.push_mut(2);
@@ -154,15 +260,15 @@ fn test_push() {
 
 #[test]
 fn test_extend() {
-    let mut v = vec![];
-    let mut w = vec![];
+    let mut v = vec_mut![];
+    let mut w = vec_mut![];
 
     v.extend(w.clone());
     assert_eq!(v, &[]);
 
     v.extend(0..3);
     for i in 0..3 {
-        w.push_mut(i);
+        w.push(i);
     }
 
     assert_eq!(v, w);
@@ -181,8 +287,8 @@ fn test_extend() {
     #[derive(PartialEq, Debug)]
     struct Foo;
 
-    let mut a = vec![];
-    let b = vec![Foo, Foo];
+    let mut a = vec_mut![];
+    let b = vec_mut![Foo, Foo];
 
     a.extend(b);
     assert_eq!(a, &[Foo, Foo]);
@@ -215,13 +321,13 @@ fn test_extend_from_slice() {
 
 #[test]
 fn test_extend_ref() {
-    let mut v = vec![1, 2];
+    let mut v = vec_mut![1, 2];
     v.extend(&[3, 4, 5]);
 
     assert_eq!(v.len(), 5);
     assert_eq!(v, [1, 2, 3, 4, 5]);
 
-    let w = vec![6, 7];
+    let w = vec_mut![6, 7];
     v.extend(&w);
 
     assert_eq!(v.len(), 7);
@@ -230,7 +336,7 @@ fn test_extend_ref() {
 
 #[test]
 fn test_slice_from_ref() {
-    let values = vec![1, 2, 3, 4, 5];
+    let values = unsafe { raw_vec![1, 2, 3, 4, 5] };
     let slice = &values[1..3];
 
     assert_eq!(slice, [2, 3]);
@@ -238,7 +344,7 @@ fn test_slice_from_ref() {
 
 #[test]
 fn test_slice_from_mut() {
-    let mut values = vec![1, 2, 3, 4, 5];
+    let mut values = unsafe { raw_vec![1, 2, 3, 4, 5] };
     {
         let slice = &mut values[2..];
         assert!(slice == [3, 4, 5]);
@@ -252,7 +358,7 @@ fn test_slice_from_mut() {
 
 #[test]
 fn test_slice_to_mut() {
-    let mut values = vec![1, 2, 3, 4, 5];
+    let mut values = unsafe { raw_vec![1, 2, 3, 4, 5] };
     {
         let slice = &mut values[..2];
         assert!(slice == [1, 2]);
@@ -266,7 +372,7 @@ fn test_slice_to_mut() {
 
 #[test]
 fn test_split_at_mut() {
-    let mut values = vec![1, 2, 3, 4, 5];
+    let mut values = unsafe { raw_vec![1, 2, 3, 4, 5] };
     {
         let (left, right) = values.split_at_mut(2);
         {
@@ -291,8 +397,8 @@ fn test_split_at_mut() {
 
 #[test]
 fn test_clone() {
-    let v: Vec<i32> = vec![];
-    let w = vec![1, 2, 3];
+    let v: RawVec<i32> = unsafe { raw_vec![] };
+    let w = unsafe { raw_vec![1, 2, 3] };
 
     assert_eq!(v, v.clone());
 
@@ -304,9 +410,9 @@ fn test_clone() {
 
 #[test]
 fn test_clone_from() {
-    let mut v = vec![];
-    let three: Vec<Box<_>> = vec![Box::new(1), Box::new(2), Box::new(3)];
-    let two: Vec<Box<_>> = vec![Box::new(4), Box::new(5)];
+    let mut v = vec_mut![];
+    let three: Vec<Box<_>> = vec_mut![Box::new(1), Box::new(2), Box::new(3)];
+    let two: Vec<Box<_>> = vec_mut![Box::new(4), Box::new(5)];
     // zero, long
     v.clone_from(&three);
     assert_eq!(v, three);
@@ -509,26 +615,26 @@ fn test_dedup_unique() {
 fn zero_sized_values() {
     let mut v = vec![];
     assert_eq!(v.len(), 0);
-    v.push_mut(());
+    v.push(());
     assert_eq!(v.len(), 1);
-    v.push_mut(());
+    v.push(());
     assert_eq!(v.len(), 2);
     assert_eq!(v.pop(), Some(()));
     assert_eq!(v.pop(), Some(()));
     assert_eq!(v.pop(), None);
 
     assert_eq!(v.iter().count(), 0);
-    v.push_mut(());
+    v.push(());
     assert_eq!(v.iter().count(), 1);
-    v.push_mut(());
+    v.push(());
     assert_eq!(v.iter().count(), 2);
 
     for &() in &v {}
 
     assert_eq!(v.iter_mut().count(), 2);
-    v.push_mut(());
+    v.push(());
     assert_eq!(v.iter_mut().count(), 3);
-    v.push_mut(());
+    v.push(());
     assert_eq!(v.iter_mut().count(), 4);
 
     for &mut () in &mut v {}
@@ -558,7 +664,7 @@ fn test_partition() {
 
 #[test]
 fn test_cmp() {
-    let x: Vec<isize> = vec![1, 2, 3, 4, 5];
+    let x: RawVec<isize> = unsafe { raw_vec![1, 2, 3, 4, 5] };
     let cmp: &[isize] = &[1, 2, 3, 4, 5];
     assert_eq!(&x[..], cmp);
     let cmp: &[isize] = &[3, 4, 5];
@@ -624,14 +730,14 @@ fn test_index_out_of_bounds() {
 #[test]
 #[should_panic]
 fn test_slice_out_of_bounds_1() {
-    let x = vec![1, 2, 3, 4, 5];
+    let x = unsafe { raw_vec![1, 2, 3, 4, 5] };
     let _ = &x[!0..];
 }
 
 #[test]
 #[should_panic]
 fn test_slice_out_of_bounds_2() {
-    let x = vec![1, 2, 3, 4, 5];
+    let x = unsafe { raw_vec![1, 2, 3, 4, 5] };
     let _ = &x[..6];
 }
 
@@ -639,14 +745,14 @@ fn test_slice_out_of_bounds_2() {
 #[test]
 #[should_panic]
 fn test_slice_out_of_bounds_3() {
-    let x = vec![1, 2, 3, 4, 5];
+    let x = unsafe { raw_vec![1, 2, 3, 4, 5] };
     let _ = &x[!0..4];
 }
 
 #[test]
 #[should_panic]
 fn test_slice_out_of_bounds_4() {
-    let x = vec![1, 2, 3, 4, 5];
+    let x = unsafe { raw_vec![1, 2, 3, 4, 5] };
     let _ = &x[1..6];
 }
 
@@ -654,7 +760,7 @@ fn test_slice_out_of_bounds_4() {
 #[test]
 #[should_panic]
 fn test_slice_out_of_bounds_5() {
-    let x = vec![1, 2, 3, 4, 5];
+    let x = unsafe { raw_vec![1, 2, 3, 4, 5] };
     let _ = &x[3..2];
 }
 
@@ -670,9 +776,9 @@ fn test_swap_remove_empty() {
 #[test]
 fn test_move_items() {
     let vec = vec![1, 2, 3];
-    let mut vec2 = vec![];
+    let vec2 = vec![];
     for i in vec {
-        vec2.push_mut(i);
+        vec2.push(i);
     }
     assert_eq!(vec2, [1, 2, 3]);
 }
@@ -680,9 +786,9 @@ fn test_move_items() {
 #[test]
 fn test_move_items_reverse() {
     let vec = vec![1, 2, 3];
-    let mut vec2 = vec![];
+    let vec2 = vec![];
     for i in vec.into_iter().rev() {
-        vec2.push_mut(i);
+        vec2.push(i);
     }
     assert_eq!(vec2, [3, 2, 1]);
 }
@@ -690,9 +796,9 @@ fn test_move_items_reverse() {
 #[test]
 fn test_move_items_zero_sized() {
     let vec = vec![(), (), ()];
-    let mut vec2 = vec![];
+    let vec2 = vec![];
     for i in vec {
-        vec2.push_mut(i);
+        vec2.push(i);
     }
     assert_eq!(vec2, [(), (), ()]);
 }
@@ -703,7 +809,7 @@ fn test_drain_empty_vec() {
     let mut vec: Vec<i32> = vec![];
     let mut vec2: Vec<i32> = vec![];
     for i in vec.drain(..) {
-        vec2.push_mut(i);
+        vec2.push(i);
     }
     assert!(vec.is_empty());
     assert!(vec2.is_empty());
@@ -714,7 +820,7 @@ fn test_drain_items() {
     let mut vec = vec![1, 2, 3];
     let mut vec2 = vec![];
     for i in vec.drain(..) {
-        vec2.push_mut(i);
+        vec2.push(i);
     }
     assert_eq!(vec, []);
     assert_eq!(vec2, [1, 2, 3]);
@@ -725,7 +831,7 @@ fn test_drain_items_reverse() {
     let mut vec = vec![1, 2, 3];
     let mut vec2 = vec![];
     for i in vec.drain(..).rev() {
-        vec2.push_mut(i);
+        vec2.push(i);
     }
     assert_eq!(vec, []);
     assert_eq!(vec2, [3, 2, 1]);
@@ -736,7 +842,7 @@ fn test_drain_items_zero_sized() {
     let mut vec = vec![(), (), ()];
     let mut vec2 = vec![];
     for i in vec.drain(..) {
-        vec2.push_mut(i);
+        vec2.push(i);
     }
     assert_eq!(vec, []);
     assert_eq!(vec2, [(), (), ()]);
@@ -1020,10 +1126,11 @@ fn test_split_off_take_all() {
     assert!(split_off.capacity() < orig_capacity);
     assert_ne!(split_off.as_ptr(), orig_ptr);
 }
+*/
 
 #[test]
 fn test_into_iter_as_slice() {
-    let vec = vec!['a', 'b', 'c'];
+    let vec = unsafe { raw_vec!['a', 'b', 'c'] };
     let mut into_iter = vec.into_iter();
     assert_eq!(into_iter.as_slice(), &['a', 'b', 'c']);
     let _ = into_iter.next().unwrap();
@@ -1035,7 +1142,7 @@ fn test_into_iter_as_slice() {
 
 #[test]
 fn test_into_iter_as_mut_slice() {
-    let vec = vec!['a', 'b', 'c'];
+    let vec = unsafe { raw_vec!['a', 'b', 'c'] };
     let mut into_iter = vec.into_iter();
     assert_eq!(into_iter.as_slice(), &['a', 'b', 'c']);
     into_iter.as_mut_slice()[0] = 'x';
@@ -1043,7 +1150,6 @@ fn test_into_iter_as_mut_slice() {
     assert_eq!(into_iter.next().unwrap(), 'x');
     assert_eq!(into_iter.as_slice(), &['y', 'c']);
 }
-*/
 
 #[test]
 fn test_into_iter_debug() {
@@ -1051,11 +1157,17 @@ fn test_into_iter_debug() {
     let into_iter = vec.into_iter();
     let debug = format!("{into_iter:?}");
     assert_eq!(debug, "IntoIter(['a', 'b', 'c'])");
+
+    let vec = unsafe { raw_vec!['a', 'b', 'c'] };
+    let into_iter = vec.into_iter();
+    let debug = format!("{into_iter:?}");
+    assert_eq!(debug, "IntoIter(['a', 'b', 'c'])");
 }
 
 #[test]
 fn test_into_iter_count() {
-    assert_eq!([1, 2, 3].into_iter().count(), 3);
+    assert_eq!(vec![1, 2, 3].into_iter().count(), 3);
+    assert_eq!(unsafe { raw_vec![1, 2, 3].into_iter().count() }, 3);
 }
 
 // (`Iterator::next_chunk` is unstable)
@@ -1139,18 +1251,18 @@ fn test_into_iter_zst() {
 
     const C: AlignedZstWithDrop = AlignedZstWithDrop([0u64; 0]);
 
-    for _ in vec![C].into_iter() {}
-    for _ in vec![C; 5].into_iter().rev() {}
+    for _ in unsafe { raw_vec![C] }.into_iter() {}
+    for _ in unsafe { raw_vec![C; 5] }.into_iter().rev() {}
 
-    // let mut it = vec![C, C].into_iter();
+    // let mut it = unsafe { raw_vec![C, C] }.into_iter();
     // assert_eq!(it.advance_by(1), Ok(()));
     // drop(it);
 
-    // let mut it = vec![C, C].into_iter();
+    // let mut it = unsafe { raw_vec![C, C] }.into_iter();
     // it.next_chunk::<1>().unwrap();
     // drop(it);
 
-    // let mut it = vec![C, C].into_iter();
+    // let mut it = unsafe { raw_vec![C, C] }.into_iter();
     // it.next_chunk::<4>().unwrap_err();
     // drop(it);
 }
@@ -1161,6 +1273,9 @@ fn assert_covariance() {
     //     d
     // }
     fn into_iter<'new>(i: IntoIter<&'static str>) -> IntoIter<&'new str> {
+        i
+    }
+    fn raw_into_iter<'new>(i: raw::IntoIter<&'static str>) -> raw::IntoIter<&'new str> {
         i
     }
 }
@@ -1462,14 +1577,14 @@ fn test_reserve_exact() {
     assert!(v.capacity() >= 2);
 
     for i in 0..16 {
-        v.push_mut(i);
+        v.push(i);
     }
 
     assert!(v.capacity() >= 16);
     v.reserve_exact(16);
     assert!(v.capacity() >= 32);
 
-    v.push_mut(16);
+    v.push(16);
 
     v.reserve_exact(16);
     assert!(v.capacity() >= 33)
@@ -1774,14 +1889,14 @@ fn test_vec_cycle() {
     let mut c3 = C::new();
 
     // Push
-    c1.v.push_mut(Cell::new(None));
-    c1.v.push_mut(Cell::new(None));
+    c1.v.push(Cell::new(None));
+    c1.v.push(Cell::new(None));
 
-    c2.v.push_mut(Cell::new(None));
-    c2.v.push_mut(Cell::new(None));
+    c2.v.push(Cell::new(None));
+    c2.v.push(Cell::new(None));
 
-    c3.v.push_mut(Cell::new(None));
-    c3.v.push_mut(Cell::new(None));
+    c3.v.push(Cell::new(None));
+    c3.v.push(Cell::new(None));
 
     // Set
     c1.v[0].set(Some(&c2));
@@ -1820,12 +1935,12 @@ fn test_vec_cycle_wrapped() {
     let mut c2 = C::new();
     let mut c3 = C::new();
 
-    c1.refs.v.push_mut(Cell::new(None));
-    c1.refs.v.push_mut(Cell::new(None));
-    c2.refs.v.push_mut(Cell::new(None));
-    c2.refs.v.push_mut(Cell::new(None));
-    c3.refs.v.push_mut(Cell::new(None));
-    c3.refs.v.push_mut(Cell::new(None));
+    c1.refs.v.push(Cell::new(None));
+    c1.refs.v.push(Cell::new(None));
+    c2.refs.v.push(Cell::new(None));
+    c2.refs.v.push(Cell::new(None));
+    c3.refs.v.push(Cell::new(None));
+    c3.refs.v.push(Cell::new(None));
 
     c1.refs.v[0].set(Some(&c2));
     c1.refs.v[1].set(Some(&c3));
@@ -1839,7 +1954,7 @@ fn test_vec_cycle_wrapped() {
 #[test]
 fn test_zero_sized_capacity() {
     for len in [0, 1, 2, 4, 8, 16, 32, 64, 128, 256] {
-        let v = Vec::<()>::new(len);
+        let v = unsafe { RawVec::<()>::new(len) };
         assert_eq!(v.len(), 0);
         assert_eq!(v.capacity(), usize::MAX);
     }
@@ -1850,11 +1965,11 @@ fn test_zero_sized_vec_push() {
     const N: usize = 8;
 
     for len in 0..N {
-        let mut tester = Vec::new(len);
+        let tester = unsafe { RawVec::<()>::new(len) };
         assert_eq!(tester.len(), 0);
         assert!(tester.capacity() >= len);
         for _ in 0..len {
-            tester.push_mut(());
+            tester.push();
         }
         assert_eq!(tester.len(), len);
         assert_eq!(tester.iter().count(), len);
@@ -1877,7 +1992,7 @@ fn test_vec_macro_repeat() {
 
 #[test]
 fn test_vec_swap() {
-    let mut a: Vec<isize> = vec![0, 1, 2, 3, 4, 5, 6];
+    let mut a: RawVec<isize> = unsafe { raw_vec![0, 1, 2, 3, 4, 5, 6] };
     a.swap(2, 4);
     assert_eq!(a[2], 4);
     assert_eq!(a[4], 2);
