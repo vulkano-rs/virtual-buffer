@@ -130,9 +130,8 @@ impl<T> Vec<T> {
 
     /// Returns the number of elements in the vector.
     ///
-    /// This number may temporarily exceed [`capacity`] so long as a thread is attempting to push
-    /// an element, doesn't corresopond to the number of initialized elements, and also doesn't
-    /// synchronize with setting the capacity.
+    /// This number may [`capacity`], doesn't corresopond to the number of initialized elements,
+    /// and also doesn't synchronize with setting the capacity.
     ///
     /// [`capacity`]: Self::capacity
     #[inline]
@@ -199,14 +198,14 @@ impl<T> Vec<T> {
     #[inline]
     #[must_use]
     pub fn get(&self, index: usize) -> Option<&T> {
-        self.inner.get(index)?.value()
+        self.inner.as_capacity().get(index)?.value()
     }
 
     /// Returns a mutable reference to an element of the vector.
     #[inline]
     #[must_use]
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
-        self.inner.get_mut(index)?.value_mut()
+        self.inner.as_mut_capacity().get_mut(index)?.value_mut()
     }
 
     /// Returns a reference to an element of the vector without doing any checks.
@@ -433,9 +432,7 @@ impl<T> Index<usize> for Vec<T> {
     #[inline]
     #[track_caller]
     fn index(&self, index: usize) -> &Self::Output {
-        let slot = Index::index(&*self.inner, index);
-
-        if let Some(value) = slot.value() {
+        if let Some(value) = self.get(index) {
             value
         } else {
             invalid_index(index)
@@ -447,9 +444,7 @@ impl<T> IndexMut<usize> for Vec<T> {
     #[inline]
     #[track_caller]
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        let slot = IndexMut::index_mut(&mut *self.inner, index);
-
-        if let Some(value) = slot.value_mut() {
+        if let Some(value) = self.get_mut(index) {
             value
         } else {
             invalid_index(index)
@@ -461,7 +456,7 @@ impl<T> IndexMut<usize> for Vec<T> {
 #[inline(never)]
 #[track_caller]
 fn invalid_index(index: usize) -> ! {
-    panic!("the element at index {index} is not yet initialized");
+    panic!("index {index} is out of bounds or not yet initialized");
 }
 
 impl<'a, T> IntoIterator for &'a Vec<T> {
@@ -1029,18 +1024,52 @@ impl<T> RawVec<T> {
     }
 
     /// Returns a slice of the entire vector.
+    ///
+    /// This returns a slice with a length equal to the vector's capacity.
+    #[inline]
+    #[must_use]
+    pub fn as_capacity(&self) -> &[T] {
+        // SAFETY: The `Acquire` ordering in `RawVec::capacity` synchronizes with the `Release`
+        // ordering when setting the capacity, making sure that the newly committed memory is
+        // visible here. The constructor of `RawVec` must ensure that `T` is zeroable.
+        unsafe { slice::from_raw_parts(self.as_ptr(), self.capacity()) }
+    }
+
+    /// Returns a mutable slice of the entire vector.
+    ///
+    /// This returns a slice with a length equal to the vector's capacity.
+    #[inline]
+    #[must_use]
+    pub fn as_mut_capacity(&mut self) -> &mut [T] {
+        // SAFETY: The mutable reference synchronizes with setting the capacity, making sure that
+        // the newly committed memory is visible here. The constructor of `RawVec` must ensure that
+        // `T` is zeroable.
+        unsafe { slice::from_raw_parts_mut(self.as_mut_ptr(), self.capacity_mut()) }
+    }
+
+    /// Returns a slice of the entire vector.
+    ///
+    /// This returns a slice with a length equal to the minimum of the vector's length and its
+    /// capacity. As such, it is slightly less efficient than [`as_capacity`].
+    ///
+    /// [`as_capacity`]: Self::as_capacity
     #[inline]
     #[must_use]
     pub fn as_slice(&self) -> &[T] {
         let len = cmp::min(self.len(), self.capacity());
 
-        // SAFETY: The `Acquire` ordering above synchronizes with the `Release` ordering when
-        // setting the capacity, making sure that the newly committed memory is visible here. The
-        // constructor of `RawVec` must ensure that `T` is zeroable.
+        // SAFETY: The `Acquire` ordering in `RawVec::capacity` synchronizes with the `Release`
+        // ordering when setting the capacity, making sure that the newly committed memory is
+        // visible here. The constructor of `RawVec` must ensure that `T` is zeroable.
         unsafe { slice::from_raw_parts(self.as_ptr(), len) }
     }
 
     /// Returns a mutable slice of the entire vector.
+    ///
+    /// This returns a slice with a length equal to the minimum of the vector's length and its
+    /// capacity. As such, it is slightly less efficient than [`as_mut_capacity`].
+    ///
+    /// [`as_mut_capacity`]: Self::as_mut_capacity
     #[inline]
     #[must_use]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
