@@ -1,7 +1,13 @@
 //! A concurrent, in-place growable vector.
 
-use self::TryReserveErrorKind::{AllocError, CapacityOverflow};
-use crate::{align_up, is_aligned, page_size, Allocation, Error, SizedTypeProperties};
+use crate::{
+    align_up, is_aligned, page_size,
+    vec::{
+        capacity_overflow, handle_error, TryReserveError,
+        TryReserveErrorKind::{AllocError, CapacityOverflow},
+    },
+    Allocation, SizedTypeProperties,
+};
 use core::{
     alloc::Layout,
     borrow::{Borrow, BorrowMut},
@@ -1624,71 +1630,5 @@ impl<T: Ord> Ord for RawVec<T> {
     #[inline]
     fn cmp(&self, other: &Self) -> cmp::Ordering {
         Ord::cmp(&**self, &**other)
-    }
-}
-
-#[cold]
-fn handle_error(err: TryReserveError) -> ! {
-    match err.kind {
-        CapacityOverflow => capacity_overflow(),
-        AllocError(err) => handle_alloc_error(err),
-    }
-}
-
-#[inline(never)]
-fn capacity_overflow() -> ! {
-    panic!("capacity overflow");
-}
-
-// Dear Clippy, `Error` is 4 bytes.
-#[allow(clippy::needless_pass_by_value)]
-#[cold]
-#[inline(never)]
-fn handle_alloc_error(err: Error) -> ! {
-    panic!("allocation failed: {err}");
-}
-
-/// Error that can happen when trying to [reserve] or [commit] memory for a [`Vec`].
-///
-/// [reserve]: crate#reserving
-/// [commit]: crate#committing
-#[derive(Debug)]
-pub struct TryReserveError {
-    kind: TryReserveErrorKind,
-}
-
-impl From<TryReserveErrorKind> for TryReserveError {
-    #[inline]
-    fn from(kind: TryReserveErrorKind) -> Self {
-        TryReserveError { kind }
-    }
-}
-
-#[derive(Debug)]
-enum TryReserveErrorKind {
-    CapacityOverflow,
-    AllocError(Error),
-}
-
-impl fmt::Display for TryReserveError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.kind {
-            CapacityOverflow => f.write_str(
-                "memory allocation failed because the computed capacity exceeded the collection's \
-                maximum",
-            ),
-            AllocError(_) => f.write_str(
-                "memory allocation failed because the operating system returned an error",
-            ),
-        }
-    }
-}
-
-impl core::error::Error for TryReserveError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match &self.kind {
-            TryReserveErrorKind::CapacityOverflow => None,
-            TryReserveErrorKind::AllocError(err) => Some(err),
-        }
     }
 }

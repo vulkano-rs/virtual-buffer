@@ -779,7 +779,7 @@ impl<T> ExactSizeIterator for IntoIter<T> {
 impl<T> FusedIterator for IntoIter<T> {}
 
 #[cold]
-fn handle_error(err: TryReserveError) -> ! {
+pub(crate) fn handle_error(err: TryReserveError) -> ! {
     match err.kind {
         CapacityOverflow => capacity_overflow(),
         AllocError(err) => handle_alloc_error(err),
@@ -787,7 +787,7 @@ fn handle_error(err: TryReserveError) -> ! {
 }
 
 #[inline(never)]
-fn capacity_overflow() -> ! {
+pub(crate) fn capacity_overflow() -> ! {
     panic!("capacity overflow");
 }
 
@@ -795,11 +795,11 @@ fn capacity_overflow() -> ! {
 #[allow(clippy::needless_pass_by_value)]
 #[cold]
 #[inline(never)]
-fn handle_alloc_error(err: Error) -> ! {
+pub(crate) fn handle_alloc_error(err: Error) -> ! {
     panic!("allocation failed: {err}");
 }
 
-/// Error that can happen when trying to [reserve] or [commit] memory for a [`Vec`].
+/// Error that can happen when trying to [reserve] or [commit] memory for a vector.
 ///
 /// [reserve]: crate#reserving
 /// [commit]: crate#committing
@@ -816,7 +816,7 @@ impl From<TryReserveErrorKind> for TryReserveError {
 }
 
 #[derive(Debug)]
-enum TryReserveErrorKind {
+pub(crate) enum TryReserveErrorKind {
     CapacityOverflow,
     AllocError(Error),
 }
