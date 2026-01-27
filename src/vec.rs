@@ -1,7 +1,7 @@
 //! An in-place growable vector.
 
 use self::TryReserveErrorKind::{AllocError, CapacityOverflow};
-use crate::{align_up, page_size, Allocation, Error, SizedTypeProperties};
+use crate::{align_up, is_aligned, page_size, Allocation, Error, SizedTypeProperties};
 use core::{
     alloc::Layout,
     borrow::{Borrow, BorrowMut},
@@ -43,12 +43,10 @@ impl<T> Vec<T> {
     ///
     /// # Panics
     ///
-    /// - Panics if `align_of::<T>()` is greater than the [page size].
     /// - Panics if the `max_capacity` would exceed `isize::MAX` bytes.
     /// - Panics if [reserving] the allocation returns an error.
     ///
     /// [committed]: crate#committing
-    /// [page size]: crate#pages
     /// [reserving]: crate#reserving
     #[must_use]
     pub fn new(max_capacity: usize) -> Self {
@@ -57,22 +55,18 @@ impl<T> Vec<T> {
 
     /// Creates a new `Vec`.
     ///
-    /// Like [`new`], except additionally allocating a header. `align_up(header_layout.size(),
-    /// align_of::<T>())` bytes will be allocated before the start of the vector's elements, with
-    /// the start aligned to `header_layout.align()`. This means in particular that `header_layout`
-    /// is **not** padded to its alignment; do it yourself if that's what you need. You can use
-    /// [`as_ptr`] and offset backwards to access the header.
+    /// Like [`new`], except additionally allocating a header. `header_layout.size()` bytes will be
+    /// allocated before the start of the vector's elements, with the start aligned to
+    /// `header_layout.align()`. You can use [`as_ptr`] and offset backwards to access the header.
     ///
     /// # Panics
     ///
-    /// - Panics if `align_of::<T>()` is greater than the [page size].
-    /// - Panics if `header_layout.align()` is greater than the page size.
+    /// - Panics if `header_layout` is not padded to its alignment.
     /// - Panics if the `max_capacity` would exceed `isize::MAX` bytes.
     /// - Panics if [reserving] the allocation returns an error.
     ///
     /// [`new`]: Self::try_new
     /// [`as_ptr`]: Self::as_ptr
-    /// [page size]: crate#pages
     /// [reserving]: crate#reserving
     #[must_use]
     pub fn with_header(max_capacity: usize, header_layout: Layout) -> Self {
@@ -86,17 +80,12 @@ impl<T> Vec<T> {
     ///
     /// Like [`new`], except returning an error when allocation fails.
     ///
-    /// # Panics
-    ///
-    /// Panics if `align_of::<T>()` is greater than the [page size].
-    ///
     /// # Errors
     ///
     /// - Returns an error if the `max_capacity` would exceed `isize::MAX` bytes.
     /// - Returns an error if [reserving] the allocation returns an error.
     ///
     /// [`new`]: Self::new
-    /// [page size]: crate#pages
     /// [reserving]: crate#reserving
     pub fn try_new(max_capacity: usize) -> Result<Self, TryReserveError> {
         Self::try_with_header(max_capacity, Layout::new::<()>())
@@ -108,8 +97,7 @@ impl<T> Vec<T> {
     ///
     /// # Panics
     ///
-    /// - Panics if `align_of::<T>()` is greater than the [page size].
-    /// - Panics if `header_layout.align()` is greater than the page size.
+    /// - Panics if `header_layout` is not padded to its alignment.
     ///
     /// # Errors
     ///
@@ -118,7 +106,6 @@ impl<T> Vec<T> {
     ///
     /// [`with_header`]: Self::with_header
     /// [`as_ptr`]: Self::as_ptr
-    /// [page size]: crate#pages
     /// [reserving]: crate#reserving
     pub fn try_with_header(
         max_capacity: usize,
@@ -243,10 +230,7 @@ impl VecInner {
         elem_size: usize,
         elem_align: usize,
     ) -> Result<Self, TryReserveError> {
-        let page_size = page_size();
-
-        assert!(elem_align <= page_size);
-        assert!(header_layout.align() <= page_size);
+        assert!(is_aligned(header_layout.size(), header_layout.align()));
 
         let size = max_capacity
             .checked_mul(elem_size)
@@ -257,6 +241,10 @@ impl VecInner {
             return Err(CapacityOverflow.into());
         }
 
+        if size == 0 && header_layout.size() == 0 {
+            return Ok(Self::dangling(elem_align));
+        }
+
         // This can't overflow because `Layout`'s size can't exceed `isize::MAX`.
         let elements_offset = align_up(header_layout.size(), elem_align);
 
@@ -264,29 +252,33 @@ impl VecInner {
         // at most `isize::MAX`, totaling `usize::MAX`.
         let size = elements_offset + size;
 
+        let page_size = page_size();
         let size = align_up(size, page_size);
 
         if size == 0 {
-            // This checks for overflow coming from the preceding `align_up`. An overflow is not
-            // possible if `header_layout.size() == 0` because then `size` can be at most
-            // `isize::MAX` before aligning, which aligns to `1 << 63` at most.
-            if header_layout.size() != 0 {
-                return Err(CapacityOverflow.into());
-            }
-
-            return Ok(Self::dangling(elem_align));
+            return Err(CapacityOverflow.into());
         }
 
+        let align = cmp::max(header_layout.align(), elem_align);
+
+        // The minimum additional size required to fulfill the alignment requirement of the header
+        // and element. The virtual memory allocation is only guaranteed to be aligned to the page
+        // size, so if the alignment is greater than the page size, we must pad the allocation.
+        let align_size = cmp::max(align, page_size) - page_size;
+
+        let size = align_size.checked_add(size).ok_or(CapacityOverflow)?;
+
         let allocation = Allocation::new(size).map_err(AllocError)?;
+        let aligned_ptr = allocation.ptr().map_addr(|addr| align_up(addr, align));
         let initial_size = align_up(elements_offset, page_size);
 
         if initial_size != 0 {
             allocation
-                .commit(allocation.ptr(), initial_size)
+                .commit(aligned_ptr, initial_size)
                 .map_err(AllocError)?;
         }
 
-        let elements = allocation.ptr().wrapping_add(elements_offset).cast();
+        let elements = aligned_ptr.wrapping_add(elements_offset).cast();
 
         let capacity = if elem_size == 0 {
             0

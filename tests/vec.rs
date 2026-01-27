@@ -49,12 +49,13 @@ macro_rules! vec {
 
 #[test]
 fn header_alignment() {
-    for align_log2 in 0..12 {
+    for align_log2 in 0..=20 {
         let align = 1 << align_log2;
-        let header_layout = Layout::from_size_align(1, align).unwrap();
-        let vec = Vec::<i32>::with_header(1, header_layout);
-        let addr = vec.as_ptr().addr();
-        assert_eq!(addr - align_of::<i32>(), align_down(addr, page_size()));
+        let size = 4 * align;
+        let header_layout = Layout::from_size_align(size, align).unwrap();
+        let mut vec = Vec::<u8>::with_header(1, header_layout);
+        assert_eq!(vec.as_ptr().addr() % align, 0);
+        unsafe { *vec.as_mut_ptr().sub(size) = 0 };
     }
 }
 
@@ -71,6 +72,25 @@ fn header_and_zero_max_capacity() {
 fn oversized_header() {
     let header_layout = Layout::from_size_align(isize::MAX as usize, 1).unwrap();
     let _ = Vec::<u8>::with_header(isize::MAX as usize, header_layout);
+}
+
+#[test]
+fn overaligned_element() {
+    #[repr(align(1_048_576))] // 1 << 20
+    struct Overaligned(#[allow(dead_code)] u8);
+
+    let header_layout = Layout::new::<u8>();
+    let mut vec = Vec::<Overaligned>::with_header(4, header_layout);
+    let align = align_of::<Overaligned>();
+    assert_eq!(vec.as_ptr().addr() % align, 0);
+    unsafe { *vec.as_mut_ptr().cast::<u8>().sub(align) = 0 };
+}
+
+#[test]
+#[should_panic]
+fn unpadded_header() {
+    let header_layout = Layout::from_size_align(1, 2).unwrap();
+    let _ = Vec::<u8>::with_header(1, header_layout);
 }
 
 struct DropCounter<'a> {
