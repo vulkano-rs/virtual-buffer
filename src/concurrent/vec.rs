@@ -76,6 +76,7 @@ impl<T> Vec<T> {
     /// [committed]: crate#committing
     /// [reserving]: crate#reserving
     #[must_use]
+    #[track_caller]
     pub fn new(max_capacity: usize) -> Self {
         Vec {
             inner: unsafe { RawVec::new(max_capacity) },
@@ -150,6 +151,7 @@ impl<T> Vec<T> {
 
     /// Appends an element to the end of the vector. Returns the index of the inserted element.
     #[inline]
+    #[track_caller]
     pub fn push(&self, value: T) -> usize {
         self.push_with(|_| value)
     }
@@ -159,6 +161,7 @@ impl<T> Vec<T> {
     /// `f` is called with the index of the element and the result is written to the element.
     /// Returns the index of the element.
     #[inline]
+    #[track_caller]
     pub fn push_with(&self, f: impl FnOnce(usize) -> T) -> usize {
         let (index, slot) = self.inner.push();
 
@@ -173,6 +176,7 @@ impl<T> Vec<T> {
 
     /// Appends an element to the end of the vector. Returns the index of the inserted element.
     #[inline]
+    #[track_caller]
     pub fn push_mut(&mut self, value: T) -> usize {
         self.push_with_mut(|_| value)
     }
@@ -182,6 +186,7 @@ impl<T> Vec<T> {
     /// `f` is called with the index of the element and the result is written to the element.
     /// Returns the index of the element.
     #[inline]
+    #[track_caller]
     pub fn push_with_mut(&mut self, f: impl FnOnce(usize) -> T) -> usize {
         let (index, slot) = self.inner.push_mut();
 
@@ -909,6 +914,7 @@ impl<T> RawVec<T> {
     /// [committed]: crate#committing
     /// [reserving]: crate#reserving
     #[must_use]
+    #[track_caller]
     pub unsafe fn new(max_capacity: usize) -> Self {
         unsafe { Self::with_header(max_capacity, Layout::new::<()>()) }
     }
@@ -933,6 +939,7 @@ impl<T> RawVec<T> {
     /// [`as_ptr`]: Self::as_ptr
     /// [reserving]: crate#reserving
     #[must_use]
+    #[track_caller]
     pub unsafe fn with_header(max_capacity: usize, header_layout: Layout) -> Self {
         match unsafe { Self::try_with_header(max_capacity, header_layout) } {
             Ok(vec) => vec,
@@ -979,6 +986,7 @@ impl<T> RawVec<T> {
     /// [`with_header`]: Self::with_header
     /// [`as_ptr`]: Self::as_ptr
     /// [reserving]: crate#reserving
+    #[track_caller]
     pub unsafe fn try_with_header(
         max_capacity: usize,
         header_layout: Layout,
@@ -1143,6 +1151,7 @@ impl<T> RawVec<T> {
     /// Returns the index of the inserted element as well as the element itself. The element is
     /// zeroed; you must initialize it yourself.
     #[inline]
+    #[track_caller]
     pub fn push(&self) -> (usize, &T) {
         if T::IS_ZST {
             let mut len = self.inner.len.load(Relaxed);
@@ -1190,6 +1199,7 @@ impl<T> RawVec<T> {
     }
 
     #[inline(never)]
+    #[track_caller]
     unsafe fn grow_one(&self, len: usize) {
         if let Err(err) = unsafe { self.inner.grow_amortized(len, 1, size_of::<T>()) } {
             if len >= self.inner.max_capacity {
@@ -1214,6 +1224,7 @@ impl<T> RawVec<T> {
     /// Returns the index of the inserted element as well as the element itself. The element is
     /// zeroed; you must initialize it yourself.
     #[inline]
+    #[track_caller]
     pub fn push_mut(&mut self) -> (usize, &mut T) {
         let len = self.len_mut();
 
@@ -1232,6 +1243,7 @@ impl<T> RawVec<T> {
     }
 
     #[inline(never)]
+    #[track_caller]
     unsafe fn grow_one_mut(&mut self) {
         let len = self.len_mut();
 
@@ -1242,6 +1254,7 @@ impl<T> RawVec<T> {
 }
 
 impl RawVecInner {
+    #[track_caller]
     unsafe fn try_with_header(
         max_capacity: usize,
         header_layout: Layout,

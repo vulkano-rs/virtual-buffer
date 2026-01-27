@@ -49,6 +49,7 @@ impl<T> Vec<T> {
     /// [committed]: crate#committing
     /// [reserving]: crate#reserving
     #[must_use]
+    #[track_caller]
     pub fn new(max_capacity: usize) -> Self {
         Self::with_header(max_capacity, Layout::new::<()>())
     }
@@ -69,6 +70,7 @@ impl<T> Vec<T> {
     /// [`as_ptr`]: Self::as_ptr
     /// [reserving]: crate#reserving
     #[must_use]
+    #[track_caller]
     pub fn with_header(max_capacity: usize, header_layout: Layout) -> Self {
         match Self::try_with_header(max_capacity, header_layout) {
             Ok(vec) => vec,
@@ -107,6 +109,7 @@ impl<T> Vec<T> {
     /// [`with_header`]: Self::with_header
     /// [`as_ptr`]: Self::as_ptr
     /// [reserving]: crate#reserving
+    #[track_caller]
     pub fn try_with_header(
         max_capacity: usize,
         header_layout: Layout,
@@ -201,6 +204,7 @@ impl<T> Vec<T> {
 
     /// Appends an element to the end of the vector.
     #[inline]
+    #[track_caller]
     pub fn push(&mut self, value: T) {
         let len = self.len();
 
@@ -216,6 +220,7 @@ impl<T> Vec<T> {
     }
 
     #[inline(never)]
+    #[track_caller]
     fn grow_one(&mut self) {
         if let Err(err) = unsafe { self.inner.grow_amortized(1, size_of::<T>()) } {
             handle_error(err);
@@ -224,6 +229,7 @@ impl<T> Vec<T> {
 }
 
 impl VecInner {
+    #[track_caller]
     unsafe fn try_with_header(
         max_capacity: usize,
         header_layout: Layout,
@@ -779,6 +785,7 @@ impl<T> ExactSizeIterator for IntoIter<T> {
 impl<T> FusedIterator for IntoIter<T> {}
 
 #[cold]
+#[track_caller]
 pub(crate) fn handle_error(err: TryReserveError) -> ! {
     match err.kind {
         CapacityOverflow => capacity_overflow(),
@@ -787,6 +794,7 @@ pub(crate) fn handle_error(err: TryReserveError) -> ! {
 }
 
 #[inline(never)]
+#[track_caller]
 pub(crate) fn capacity_overflow() -> ! {
     panic!("capacity overflow");
 }
@@ -795,6 +803,7 @@ pub(crate) fn capacity_overflow() -> ! {
 #[allow(clippy::needless_pass_by_value)]
 #[cold]
 #[inline(never)]
+#[track_caller]
 pub(crate) fn handle_alloc_error(err: Error) -> ! {
     panic!("allocation failed: {err}");
 }
