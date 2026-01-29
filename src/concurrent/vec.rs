@@ -1198,6 +1198,7 @@ impl<T> RawVec<T> {
         }
     }
 
+    #[cold]
     #[inline(never)]
     #[track_caller]
     unsafe fn grow_one(&self, len: usize) {
@@ -1242,6 +1243,7 @@ impl<T> RawVec<T> {
         (len, slot)
     }
 
+    #[cold]
     #[inline(never)]
     #[track_caller]
     unsafe fn grow_one_mut(&mut self) {

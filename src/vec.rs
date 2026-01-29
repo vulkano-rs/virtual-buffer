@@ -219,6 +219,7 @@ impl<T> Vec<T> {
         unsafe { self.inner.len += 1 };
     }
 
+    #[cold]
     #[inline(never)]
     #[track_caller]
     fn grow_one(&mut self) {
