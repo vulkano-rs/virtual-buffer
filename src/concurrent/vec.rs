@@ -1233,7 +1233,7 @@ impl<T> RawVec<T> {
             unsafe { self.grow_one_mut() };
         }
 
-        *self.inner.len.get_mut() += 1;
+        *self.inner.len.get_mut() = len + 1;
 
         // SAFETY: We made sure the index is in bounds above. The mutable reference synchronizes
         // with setting the capacity, making sure that the newly committed memory is visible here.

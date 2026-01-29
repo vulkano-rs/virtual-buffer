@@ -216,7 +216,7 @@ impl<T> Vec<T> {
         unsafe { self.as_mut_ptr().add(len).write(value) };
 
         // SAFETY: We have written the element above.
-        unsafe { self.inner.len += 1 };
+        unsafe { self.inner.len = len + 1 };
     }
 
     #[cold]
