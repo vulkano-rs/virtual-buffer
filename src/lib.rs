@@ -130,6 +130,7 @@ impl Allocation {
     /// [committed]: self#committing
     /// [unreserved]: self#unreserving
     /// [`commit`]: Self::commit
+    #[track_caller]
     pub fn new(size: usize) -> Result<Self> {
         assert!(is_aligned(size, page_size()));
         assert_ne!(size, 0);
@@ -202,6 +203,7 @@ impl Allocation {
     /// [Commits]: self#committing
     /// [dangling]: Self::dangling
     /// [page size]: self#pages
+    #[track_caller]
     pub fn commit(&self, ptr: *mut u8, size: usize) -> Result<()> {
         self.check_range(ptr, size);
 
@@ -225,6 +227,7 @@ impl Allocation {
     /// [Decommits]: self#decommitting
     /// [dangling]: Self::dangling
     /// [page size]: self#pages
+    #[track_caller]
     pub fn decommit(&self, ptr: *mut u8, size: usize) -> Result<()> {
         self.check_range(ptr, size);
 
@@ -248,6 +251,7 @@ impl Allocation {
     /// [Prefaults]: self#prefaulting
     /// [dangling]: Self::dangling
     /// [page size]: self#pages
+    #[track_caller]
     pub fn prefault(&self, ptr: *mut u8, size: usize) -> Result<()> {
         self.check_range(ptr, size);
 
@@ -256,6 +260,7 @@ impl Allocation {
     }
 
     #[inline(never)]
+    #[track_caller]
     fn check_range(&self, ptr: *mut u8, size: usize) {
         assert_ne!(self.size(), 0, "the allocation is dangling");
         assert_ne!(size, 0);
