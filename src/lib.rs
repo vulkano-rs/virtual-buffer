@@ -172,7 +172,7 @@ impl Allocation {
     /// [pages]: self#pages
     /// [committed]: self#committing
     /// [`size()`]: Self::size
-    #[inline(always)]
+    #[inline]
     #[must_use]
     pub const fn ptr(&self) -> *mut u8 {
         self.inner.ptr().cast()
@@ -181,7 +181,7 @@ impl Allocation {
     /// Returns the size that was used to [allocate] `self`.
     ///
     /// [allocate]: Self::new
-    #[inline(always)]
+    #[inline]
     #[must_use]
     pub const fn size(&self) -> usize {
         self.inner.size()
@@ -287,7 +287,7 @@ impl fmt::Debug for Allocation {
 /// The value is cached globally and very fast to retrieve.
 ///
 /// [page size]: self#pages
-#[inline(always)]
+#[inline]
 #[must_use]
 pub fn page_size() -> usize {
     sys::page_size()
@@ -419,12 +419,12 @@ mod unix {
             }
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn ptr(&self) -> *mut c_void {
             self.ptr.as_ptr()
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn size(&self) -> usize {
             self.size
         }
@@ -497,7 +497,7 @@ mod unix {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn page_size() -> usize {
         static PAGE_SIZE: AtomicUsize = AtomicUsize::new(0);
 
@@ -653,12 +653,12 @@ mod windows {
             }
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn ptr(&self) -> *mut c_void {
             self.ptr.as_ptr()
         }
 
-        #[inline(always)]
+        #[inline]
         pub const fn size(&self) -> usize {
             self.size
         }
@@ -728,7 +728,7 @@ mod windows {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn page_size() -> usize {
         static PAGE_SIZE: AtomicUsize = AtomicUsize::new(0);
 
