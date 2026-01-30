@@ -17,6 +17,7 @@ use virtual_buffer::{
     align_down,
     concurrent::vec::{raw, IntoIter, RawVec, Vec},
     page_size,
+    vec::GrowthStrategy,
 };
 
 macro_rules! vec {
@@ -148,6 +149,69 @@ fn push_mut_immut() {
     vec.push_mut(Box::new(5));
 
     assert_eq!(vec, [1, 2, 3, 4, 5].map(Box::new));
+}
+
+#[test]
+fn growth_strategy_overflow() {
+    let growth_strategy = GrowthStrategy::Exponential {
+        numerator: usize::MAX,
+        denominator: 1,
+    };
+    let vec = Vec::<i32>::with_growth_strategy(10, growth_strategy);
+    vec.push(42);
+    assert_eq!(vec.capacity(), 10);
+
+    let growth_strategy = GrowthStrategy::Exponential {
+        numerator: usize::MAX,
+        denominator: usize::MAX - 1,
+    };
+    let vec = Vec::<i32>::with_growth_strategy(10, growth_strategy);
+    vec.push(42);
+    assert_eq!(vec.capacity(), 10);
+
+    let growth_strategy = GrowthStrategy::Linear {
+        elements: usize::MAX,
+    };
+    let vec = Vec::<i32>::with_growth_strategy(10, growth_strategy);
+    vec.push(42);
+    assert_eq!(vec.capacity(), 10);
+}
+
+#[test]
+#[should_panic]
+fn invalid_growth_strategy_1() {
+    let growth_strategy = GrowthStrategy::Exponential {
+        numerator: 1,
+        denominator: 2,
+    };
+    let _ = Vec::<i32>::with_growth_strategy(1, growth_strategy);
+}
+
+#[test]
+#[should_panic]
+fn invalid_growth_strategy_2() {
+    let growth_strategy = GrowthStrategy::Exponential {
+        numerator: 1,
+        denominator: 1,
+    };
+    let _ = Vec::<i32>::with_growth_strategy(1, growth_strategy);
+}
+
+#[test]
+#[should_panic]
+fn invalid_growth_strategy_3() {
+    let growth_strategy = GrowthStrategy::Exponential {
+        numerator: 2,
+        denominator: 0,
+    };
+    let _ = Vec::<i32>::with_growth_strategy(1, growth_strategy);
+}
+
+#[test]
+#[should_panic]
+fn invalid_growth_strategy_4() {
+    let growth_strategy = GrowthStrategy::Linear { elements: 0 };
+    let _ = Vec::<i32>::with_growth_strategy(1, growth_strategy);
 }
 
 #[test]

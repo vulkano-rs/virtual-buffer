@@ -3,7 +3,7 @@
 use crate::{
     align_up, is_aligned, page_size,
     vec::{
-        capacity_overflow, handle_error, TryReserveError,
+        capacity_overflow, handle_error, GrowthStrategy, TryReserveError,
         TryReserveErrorKind::{AllocError, CapacityOverflow},
     },
     Allocation, SizedTypeProperties,
@@ -31,9 +31,12 @@ pub mod raw;
 
 /// A concurrent, in-place growable vector.
 ///
-/// This type behaves similarly to the standard library `Vec` except that it is guaranteed to
-/// never reallocate, and as such can support concurrent reads while also supporting growth. All
-/// operations are lock-free. In order to support this, each element consists of a `T` and an
+/// This type behaves similarly to the standard library `Vec` except that it is guaranteed to never
+/// reallocate, and as such can support concurrent reads while also supporting growth. The vector
+/// grows similarly to the standard library vector, but instead of reallocating, it commits more
+/// memory.
+///
+/// All operations are lock-free. In order to support this, each element consists of a `T` and an
 /// `AtomicBool` used to denote whether the element has been initialized. That means that there is
 /// a memory overhead equal to `align_of::<T>()`. You can avoid this overhead if you have a byte of
 /// memory to spare in your `T` or by packing the bit into an existing atomic field in `T` by using
@@ -65,8 +68,7 @@ impl<T> Vec<T> {
     ///
     /// `max_capacity` is the maximum capacity the vector can ever have. The vector is guaranteed
     /// to never exceed this capacity. The capacity can be excessively huge, as none of the memory
-    /// is [committed] until you push elements into the vector. The vector grows similarly to the
-    /// standard library vector, but instead of reallocating, it commits more memory.
+    /// is [committed] until you push elements into the vector.
     ///
     /// # Panics
     ///
@@ -85,6 +87,26 @@ impl<T> Vec<T> {
 
     /// Creates a new `Vec`.
     ///
+    /// Like [`new`], except allowing you to specify the growth strategy.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if `growth_strategy` isn't valid per the documentation of [`GrowthStrategy`].
+    /// - Panics if the `max_capacity` would exceed `isize::MAX` bytes.
+    /// - Panics if [reserving] the allocation returns an error.
+    ///
+    /// [`new`]: Self::new
+    /// [reserving]: crate#reserving
+    #[must_use]
+    #[track_caller]
+    pub fn with_growth_strategy(max_capacity: usize, growth_strategy: GrowthStrategy) -> Self {
+        Vec {
+            inner: unsafe { RawVec::with_growth_strategy(max_capacity, growth_strategy) },
+        }
+    }
+
+    /// Creates a new `Vec`.
+    ///
     /// Like [`new`], except returning an error when allocation fails.
     ///
     /// # Errors
@@ -97,6 +119,31 @@ impl<T> Vec<T> {
     pub fn try_new(max_capacity: usize) -> Result<Self, TryReserveError> {
         Ok(Vec {
             inner: unsafe { RawVec::try_new(max_capacity) }?,
+        })
+    }
+
+    /// Creates a new `Vec`.
+    ///
+    /// Like [`with_growth_strategy`], except returning an error when allocation fails.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if `growth_strategy` isn't valid per the documentation of [`GrowthStrategy`].
+    ///
+    /// # Errors
+    ///
+    /// - Returns an error if the `max_capacity` would exceed `isize::MAX` bytes.
+    /// - Returns an error if [reserving] the allocation returns an error.
+    ///
+    /// [`with_growth_strategy`]: Self::with_growth_strategy
+    /// [reserving]: crate#reserving
+    #[track_caller]
+    pub fn try_with_growth_strategy(
+        max_capacity: usize,
+        growth_strategy: GrowthStrategy,
+    ) -> Result<Self, TryReserveError> {
+        Ok(Vec {
+            inner: unsafe { RawVec::try_with_growth_strategy(max_capacity, growth_strategy) }?,
         })
     }
 
@@ -888,9 +935,10 @@ pub struct RawVec<T> {
 
 struct RawVecInner {
     elements: *mut (),
-    max_capacity: usize,
     capacity: AtomicUsize,
     len: AtomicUsize,
+    max_capacity: usize,
+    growth_strategy: GrowthStrategy,
     allocation: Allocation,
 }
 
@@ -899,8 +947,7 @@ impl<T> RawVec<T> {
     ///
     /// `max_capacity` is the maximum capacity the vector can ever have. The vector is guaranteed
     /// to never exceed this capacity. The capacity can be excessively huge, as none of the memory
-    /// is [committed] until you push elements into the vector. The vector grows similarly to the
-    /// standard library vector, but instead of reallocating, it commits more memory.
+    /// is [committed] until you push elements into the vector.
     ///
     /// # Safety
     ///
@@ -917,6 +964,37 @@ impl<T> RawVec<T> {
     #[track_caller]
     pub unsafe fn new(max_capacity: usize) -> Self {
         unsafe { Self::with_header(max_capacity, Layout::new::<()>()) }
+    }
+
+    /// Creates a new `RawVec`.
+    ///
+    /// Like [`new`], except allowing you to specify the growth strategy.
+    ///
+    /// # Safety
+    ///
+    /// `T` must be zeroable.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if `growth_strategy` isn't valid per the documentation of [`GrowthStrategy`].
+    /// - Panics if the `max_capacity` would exceed `isize::MAX` bytes.
+    /// - Panics if [reserving] the allocation returns an error.
+    ///
+    /// [`new`]: Self::new
+    /// [reserving]: crate#reserving
+    #[must_use]
+    #[track_caller]
+    pub unsafe fn with_growth_strategy(
+        max_capacity: usize,
+        growth_strategy: GrowthStrategy,
+    ) -> Self {
+        unsafe {
+            Self::with_growth_strategy_and_header(
+                max_capacity,
+                growth_strategy,
+                Layout::new::<()>(),
+            )
+        }
     }
 
     /// Creates a new `RawVec`.
@@ -941,7 +1019,43 @@ impl<T> RawVec<T> {
     #[must_use]
     #[track_caller]
     pub unsafe fn with_header(max_capacity: usize, header_layout: Layout) -> Self {
-        match unsafe { Self::try_with_header(max_capacity, header_layout) } {
+        unsafe {
+            Self::with_growth_strategy_and_header(
+                max_capacity,
+                GrowthStrategy::default(),
+                header_layout,
+            )
+        }
+    }
+
+    /// Creates a new `RawVec`.
+    ///
+    /// Like [`with_growth_strategy`] and [`with_header`] combined.
+    ///
+    /// # Safety
+    ///
+    /// `T` must be zeroable.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if `growth_strategy` isn't valid per the documentation of [`GrowthStrategy`].
+    /// - Panics if `header_layout` is not padded to its alignment.
+    /// - Panics if the `max_capacity` would exceed `isize::MAX` bytes.
+    /// - Panics if [reserving] the allocation returns an error.
+    ///
+    /// [`with_growth_strategy`]: Self::try_new
+    /// [`with_header`]: Self::with_header
+    /// [reserving]: crate#reserving
+    #[must_use]
+    #[track_caller]
+    pub unsafe fn with_growth_strategy_and_header(
+        max_capacity: usize,
+        growth_strategy: GrowthStrategy,
+        header_layout: Layout,
+    ) -> Self {
+        match unsafe {
+            Self::try_with_growth_strategy_and_header(max_capacity, growth_strategy, header_layout)
+        } {
             Ok(vec) => vec,
             Err(err) => handle_error(err),
         }
@@ -968,6 +1082,39 @@ impl<T> RawVec<T> {
 
     /// Creates a new `RawVec`.
     ///
+    /// Like [`with_growth_strategy`], except returning an error when allocation fails.
+    ///
+    /// # Safety
+    ///
+    /// `T` must be zeroable.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if `growth_strategy` isn't valid per the documentation of [`GrowthStrategy`].
+    ///
+    /// # Errors
+    ///
+    /// - Returns an error if the `max_capacity` would exceed `isize::MAX` bytes.
+    /// - Returns an error if [reserving] the allocation returns an error.
+    ///
+    /// [`with_growth_strategy`]: Self::with_growth_strategy
+    /// [reserving]: crate#reserving
+    #[track_caller]
+    pub unsafe fn try_with_growth_strategy(
+        max_capacity: usize,
+        growth_strategy: GrowthStrategy,
+    ) -> Result<Self, TryReserveError> {
+        unsafe {
+            Self::try_with_growth_strategy_and_header(
+                max_capacity,
+                growth_strategy,
+                Layout::new::<()>(),
+            )
+        }
+    }
+
+    /// Creates a new `RawVec`.
+    ///
     /// Like [`with_header`], except returning an error when allocation fails.
     ///
     /// # Safety
@@ -984,17 +1131,52 @@ impl<T> RawVec<T> {
     /// - Returns an error if [reserving] the allocation returns an error.
     ///
     /// [`with_header`]: Self::with_header
-    /// [`as_ptr`]: Self::as_ptr
     /// [reserving]: crate#reserving
     #[track_caller]
     pub unsafe fn try_with_header(
         max_capacity: usize,
         header_layout: Layout,
     ) -> Result<Self, TryReserveError> {
+        unsafe {
+            Self::try_with_growth_strategy_and_header(
+                max_capacity,
+                GrowthStrategy::default(),
+                header_layout,
+            )
+        }
+    }
+
+    /// Creates a new `RawVec`.
+    ///
+    /// Like [`with_growth_strategy_and_header`], except returning an error when allocation fails.
+    ///
+    /// # Safety
+    ///
+    /// `T` must be zeroable.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if `growth_strategy` isn't valid per the documentation of [`GrowthStrategy`].
+    /// - Panics if `header_layout` is not padded to its alignment.
+    ///
+    /// # Errors
+    ///
+    /// - Returns an error if the `max_capacity` would exceed `isize::MAX` bytes.
+    /// - Returns an error if [reserving] the allocation returns an error.
+    ///
+    /// [`with_growth_strategy_and_header`]: Self::with_growth_strategy_and_header
+    /// [reserving]: crate#reserving
+    #[track_caller]
+    pub unsafe fn try_with_growth_strategy_and_header(
+        max_capacity: usize,
+        growth_strategy: GrowthStrategy,
+        header_layout: Layout,
+    ) -> Result<Self, TryReserveError> {
         Ok(RawVec {
             inner: unsafe {
-                RawVecInner::try_with_header(
+                RawVecInner::new(
                     max_capacity,
+                    growth_strategy,
                     header_layout,
                     size_of::<T>(),
                     align_of::<T>(),
@@ -1202,7 +1384,7 @@ impl<T> RawVec<T> {
     #[inline(never)]
     #[track_caller]
     unsafe fn grow_one(&self, len: usize) {
-        if let Err(err) = unsafe { self.inner.grow_amortized(len, 1, size_of::<T>()) } {
+        if let Err(err) = unsafe { self.inner.grow(len, 1, size_of::<T>()) } {
             if len >= self.inner.max_capacity {
                 // This can't overflow because `grow_one` must be called after the length was
                 // incremented. It is sound to decrement because it's impossible for an element to
@@ -1249,7 +1431,7 @@ impl<T> RawVec<T> {
     unsafe fn grow_one_mut(&mut self) {
         let len = self.len_mut();
 
-        if let Err(err) = unsafe { self.inner.grow_amortized(len, 1, size_of::<T>()) } {
+        if let Err(err) = unsafe { self.inner.grow(len, 1, size_of::<T>()) } {
             handle_error(err);
         }
     }
@@ -1257,12 +1439,15 @@ impl<T> RawVec<T> {
 
 impl RawVecInner {
     #[track_caller]
-    unsafe fn try_with_header(
+    unsafe fn new(
         max_capacity: usize,
+        growth_strategy: GrowthStrategy,
         header_layout: Layout,
         elem_size: usize,
         elem_align: usize,
     ) -> Result<Self, TryReserveError> {
+        growth_strategy.validate();
+
         assert!(is_aligned(header_layout.size(), header_layout.align()));
 
         let size = max_capacity
@@ -1321,9 +1506,10 @@ impl RawVecInner {
 
         Ok(RawVecInner {
             elements,
-            max_capacity,
             capacity: AtomicUsize::new(capacity),
             len: AtomicUsize::new(0),
+            max_capacity,
+            growth_strategy,
             allocation,
         })
     }
@@ -1334,16 +1520,18 @@ impl RawVecInner {
 
         RawVecInner {
             elements: allocation.ptr().cast(),
-            max_capacity: 0,
             capacity: AtomicUsize::new(0),
             len: AtomicUsize::new(0),
+            max_capacity: 0,
+            growth_strategy: GrowthStrategy::Exponential {
+                numerator: 2,
+                denominator: 1,
+            },
             allocation,
         }
     }
 
-    // TODO: What's there to amortize over? It should be linear growth.
-    #[inline(never)]
-    unsafe fn grow_amortized(
+    unsafe fn grow(
         &self,
         len: usize,
         additional: usize,
@@ -1362,18 +1550,19 @@ impl RawVecInner {
         }
 
         let old_capacity = self.capacity.load(Acquire);
-        let page_size = page_size();
 
-        let new_capacity = cmp::max(old_capacity * 2, required_capacity);
-        let new_capacity = cmp::max(new_capacity, page_size / elem_size);
-        let new_capacity = cmp::min(new_capacity, self.max_capacity);
-
-        if old_capacity == new_capacity {
+        if old_capacity >= required_capacity {
             // Another thread beat us to it.
             return Ok(());
         }
 
+        let new_capacity = self.growth_strategy.grow(old_capacity);
+        let new_capacity = cmp::max(new_capacity, required_capacity);
+        let new_capacity = cmp::min(new_capacity, self.max_capacity);
+
         let elements_offset = self.elements.addr() - self.allocation.ptr().addr();
+
+        let page_size = page_size();
 
         // These can't overflow because the size is already allocated.
         let old_size = align_up(elements_offset + old_capacity * elem_size, page_size);
@@ -1383,6 +1572,9 @@ impl RawVecInner {
         let size = new_size - old_size;
 
         self.allocation.commit(ptr, size).map_err(AllocError)?;
+
+        let new_capacity = (new_size - elements_offset) / elem_size;
+        let new_capacity = cmp::min(new_capacity, self.max_capacity);
 
         if let Err(capacity) =
             self.capacity

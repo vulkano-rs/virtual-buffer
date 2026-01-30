@@ -18,8 +18,13 @@ use core::{
 
 /// An in-place growable vector.
 ///
-/// This type behaves identically to the standard library `Vec` except that it is guaranteed to
-/// never reallocate.
+/// This type behaves similarly to the standard library `Vec` except that it is guaranteed to never
+/// reallocate. The vector grows similarly to the standard library vector, but instead of
+/// reallocating, it commits more memory. If you don't specify a [growth strategy], exponential
+/// growth with a growth factor of 2 is used, which is the same strategy that the standard library
+/// `Vec` uses.
+///
+/// [growth strategy]: GrowthStrategy
 pub struct Vec<T> {
     inner: VecInner,
     marker: PhantomData<T>,
@@ -27,9 +32,10 @@ pub struct Vec<T> {
 
 struct VecInner {
     elements: *mut (),
-    max_capacity: usize,
     capacity: usize,
     len: usize,
+    max_capacity: usize,
+    growth_strategy: GrowthStrategy,
     allocation: Allocation,
 }
 
@@ -38,8 +44,7 @@ impl<T> Vec<T> {
     ///
     /// `max_capacity` is the maximum capacity the vector can ever have. The vector is guaranteed
     /// to never exceed this capacity. The capacity can be excessively huge, as none of the memory
-    /// is [committed] until you push elements into the vector. The vector grows similarly to the
-    /// standard library vector, but instead of reallocating, it commits more memory.
+    /// is [committed] until you push elements into the vector.
     ///
     /// # Panics
     ///
@@ -52,6 +57,26 @@ impl<T> Vec<T> {
     #[track_caller]
     pub fn new(max_capacity: usize) -> Self {
         Self::with_header(max_capacity, Layout::new::<()>())
+    }
+
+    /// Creates a new `Vec`.
+    ///
+    /// Like [`new`], except allowing you to specify the growth strategy.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if `growth_strategy` isn't valid per the documentation of [`GrowthStrategy`].
+    ///
+    /// # Errors
+    ///
+    /// - Returns an error if the `max_capacity` would exceed `isize::MAX` bytes.
+    /// - Returns an error if [reserving] the allocation returns an error.
+    ///
+    /// [`new`]: Self::new
+    /// [reserving]: crate#reserving
+    #[track_caller]
+    pub fn with_growth_strategy(max_capacity: usize, growth_strategy: GrowthStrategy) -> Self {
+        Self::with_growth_strategy_and_header(max_capacity, growth_strategy, Layout::new::<()>())
     }
 
     /// Creates a new `Vec`.
@@ -72,7 +97,39 @@ impl<T> Vec<T> {
     #[must_use]
     #[track_caller]
     pub fn with_header(max_capacity: usize, header_layout: Layout) -> Self {
-        match Self::try_with_header(max_capacity, header_layout) {
+        Self::with_growth_strategy_and_header(
+            max_capacity,
+            GrowthStrategy::default(),
+            header_layout,
+        )
+    }
+
+    /// Creates a new `Vec`.
+    ///
+    /// Like [`with_growth_strategy`] and [`with_header`] combined.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if `growth_strategy` isn't valid per the documentation of [`GrowthStrategy`].
+    /// - Panics if `header_layout` is not padded to its alignment.
+    /// - Panics if the `max_capacity` would exceed `isize::MAX` bytes.
+    /// - Panics if [reserving] the allocation returns an error.
+    ///
+    /// [`with_growth_strategy`]: Self::try_new
+    /// [`with_header`]: Self::with_header
+    /// [reserving]: crate#reserving
+    #[must_use]
+    #[track_caller]
+    pub fn with_growth_strategy_and_header(
+        max_capacity: usize,
+        growth_strategy: GrowthStrategy,
+        header_layout: Layout,
+    ) -> Self {
+        match Self::try_with_growth_strategy_and_header(
+            max_capacity,
+            growth_strategy,
+            header_layout,
+        ) {
             Ok(vec) => vec,
             Err(err) => handle_error(err),
         }
@@ -93,7 +150,34 @@ impl<T> Vec<T> {
         Self::try_with_header(max_capacity, Layout::new::<()>())
     }
 
-    /// Creates a new `RawVec`.
+    /// Creates a new `Vec`.
+    ///
+    /// Like [`with_growth_strategy`], except returning an error when allocation fails.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if `growth_strategy` isn't valid per the documentation of [`GrowthStrategy`].
+    ///
+    /// # Errors
+    ///
+    /// - Returns an error if the `max_capacity` would exceed `isize::MAX` bytes.
+    /// - Returns an error if [reserving] the allocation returns an error.
+    ///
+    /// [`with_growth_strategy`]: Self::with_growth_strategy
+    /// [reserving]: crate#reserving
+    #[track_caller]
+    pub fn try_with_growth_strategy(
+        max_capacity: usize,
+        growth_strategy: GrowthStrategy,
+    ) -> Result<Self, TryReserveError> {
+        Self::try_with_growth_strategy_and_header(
+            max_capacity,
+            growth_strategy,
+            Layout::new::<()>(),
+        )
+    }
+
+    /// Creates a new `Vec`.
     ///
     /// Like [`with_header`], except returning an error when allocation fails.
     ///
@@ -107,17 +191,46 @@ impl<T> Vec<T> {
     /// - Returns an error if [reserving] the allocation returns an error.
     ///
     /// [`with_header`]: Self::with_header
-    /// [`as_ptr`]: Self::as_ptr
     /// [reserving]: crate#reserving
     #[track_caller]
     pub fn try_with_header(
         max_capacity: usize,
         header_layout: Layout,
     ) -> Result<Self, TryReserveError> {
+        Self::try_with_growth_strategy_and_header(
+            max_capacity,
+            GrowthStrategy::default(),
+            header_layout,
+        )
+    }
+
+    /// Creates a new `Vec`.
+    ///
+    /// Like [`with_growth_strategy_and_header`], except returning an error when allocation fails.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if `growth_strategy` isn't valid per the documentation of [`GrowthStrategy`].
+    /// - Panics if `header_layout` is not padded to its alignment.
+    ///
+    /// # Errors
+    ///
+    /// - Returns an error if the `max_capacity` would exceed `isize::MAX` bytes.
+    /// - Returns an error if [reserving] the allocation returns an error.
+    ///
+    /// [`with_growth_strategy_and_header`]: Self::with_growth_strategy_and_header
+    /// [reserving]: crate#reserving
+    #[track_caller]
+    pub fn try_with_growth_strategy_and_header(
+        max_capacity: usize,
+        growth_strategy: GrowthStrategy,
+        header_layout: Layout,
+    ) -> Result<Self, TryReserveError> {
         Ok(Vec {
             inner: unsafe {
-                VecInner::try_with_header(
+                VecInner::new(
                     max_capacity,
+                    growth_strategy,
                     header_layout,
                     size_of::<T>(),
                     align_of::<T>(),
@@ -223,7 +336,7 @@ impl<T> Vec<T> {
     #[inline(never)]
     #[track_caller]
     fn grow_one(&mut self) {
-        if let Err(err) = unsafe { self.inner.grow_amortized(1, size_of::<T>()) } {
+        if let Err(err) = unsafe { self.inner.grow(1, size_of::<T>()) } {
             handle_error(err);
         }
     }
@@ -231,12 +344,15 @@ impl<T> Vec<T> {
 
 impl VecInner {
     #[track_caller]
-    unsafe fn try_with_header(
+    unsafe fn new(
         max_capacity: usize,
+        growth_strategy: GrowthStrategy,
         header_layout: Layout,
         elem_size: usize,
         elem_align: usize,
     ) -> Result<Self, TryReserveError> {
+        growth_strategy.validate();
+
         assert!(is_aligned(header_layout.size(), header_layout.align()));
 
         let size = max_capacity
@@ -295,9 +411,10 @@ impl VecInner {
 
         Ok(VecInner {
             elements,
-            max_capacity,
             capacity,
             len: 0,
+            max_capacity,
+            growth_strategy,
             allocation,
         })
     }
@@ -308,19 +425,18 @@ impl VecInner {
 
         VecInner {
             elements: allocation.ptr().cast(),
-            max_capacity: 0,
             capacity: 0,
             len: 0,
+            max_capacity: 0,
+            growth_strategy: GrowthStrategy::Exponential {
+                numerator: 2,
+                denominator: 1,
+            },
             allocation,
         }
     }
 
-    // TODO: What's there to amortize over? It should be linear growth.
-    unsafe fn grow_amortized(
-        &mut self,
-        additional: usize,
-        elem_size: usize,
-    ) -> Result<(), TryReserveError> {
+    unsafe fn grow(&mut self, additional: usize, elem_size: usize) -> Result<(), TryReserveError> {
         debug_assert!(additional > 0);
 
         if elem_size == 0 {
@@ -334,13 +450,14 @@ impl VecInner {
         }
 
         let old_capacity = self.capacity;
-        let page_size = page_size();
 
-        let new_capacity = cmp::max(old_capacity * 2, required_capacity);
-        let new_capacity = cmp::max(new_capacity, page_size / elem_size);
+        let new_capacity = self.growth_strategy.grow(old_capacity);
+        let new_capacity = cmp::max(new_capacity, required_capacity);
         let new_capacity = cmp::min(new_capacity, self.max_capacity);
 
         let elements_offset = self.elements.addr() - self.allocation.ptr().addr();
+
+        let page_size = page_size();
 
         // These can't overflow because the size is already allocated.
         let old_size = align_up(elements_offset + old_capacity * elem_size, page_size);
@@ -350,6 +467,9 @@ impl VecInner {
         let size = new_size - old_size;
 
         self.allocation.commit(ptr, size).map_err(AllocError)?;
+
+        let new_capacity = (new_size - elements_offset) / elem_size;
+        let new_capacity = cmp::min(new_capacity, self.max_capacity);
 
         self.capacity = new_capacity;
 
@@ -784,6 +904,109 @@ impl<T> ExactSizeIterator for IntoIter<T> {
 }
 
 impl<T> FusedIterator for IntoIter<T> {}
+
+/// The strategy to employ when growing a vector.
+///
+/// Note that arithmetic overflow is not a concern for any of the strategies: if the final result
+/// of the calculation (in infinite precision) exceeds `max_capacity`, `max_capacity` is used as
+/// the new capacity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum GrowthStrategy {
+    /// The current capacity is multiplied by `numerator`, then divided by `denominator`.
+    ///
+    /// If the new capacity equals the old capacity, `1` is added to the new capacity.
+    ///
+    /// If the new capacity results in the last committed [page] having spare room for more
+    /// elements, those elements are added to the new capacity.
+    ///
+    /// [page]: crate#pages
+    Exponential {
+        /// The number to multiply the current capacity by. Must be greater than `denominator`.
+        numerator: usize,
+
+        /// The number to divide the multiplied number by. Must be nonzero.
+        denominator: usize,
+    },
+
+    /// `elements` is added to the current capacity.
+    ///
+    /// If the new capacity results in the last committed [page] having spare room for more
+    /// elements, those elements are added to the new capacity.
+    ///
+    /// [page]: crate#pages
+    Linear {
+        /// The number of elements to add to the current capacity. Must be nonzero.
+        elements: usize,
+    },
+}
+
+impl Default for GrowthStrategy {
+    #[inline]
+    fn default() -> Self {
+        Self::Exponential {
+            numerator: 2,
+            denominator: 1,
+        }
+    }
+}
+
+impl GrowthStrategy {
+    #[track_caller]
+    pub(crate) fn validate(&self) {
+        match *self {
+            Self::Exponential {
+                numerator,
+                denominator,
+            } => {
+                assert!(numerator > denominator);
+                assert_ne!(denominator, 0);
+            }
+            Self::Linear { elements } => {
+                assert_ne!(elements, 0);
+            }
+        }
+    }
+
+    pub(crate) fn grow(&self, old_capacity: usize) -> usize {
+        match *self {
+            GrowthStrategy::Exponential {
+                numerator,
+                denominator,
+            } => {
+                let mut new_capacity = saturating_mul_div(old_capacity, numerator, denominator);
+
+                if new_capacity == old_capacity {
+                    new_capacity = old_capacity + 1;
+                }
+
+                new_capacity
+            }
+            GrowthStrategy::Linear { elements } => old_capacity.saturating_add(elements),
+        }
+    }
+}
+
+#[cfg(target_pointer_width = "64")]
+fn saturating_mul_div(val: usize, numerator: usize, denominator: usize) -> usize {
+    (val as u128 * numerator as u128 / denominator as u128)
+        .try_into()
+        .unwrap_or(usize::MAX)
+}
+
+#[cfg(target_pointer_width = "32")]
+fn saturating_mul_div(val: usize, numerator: usize, denominator: usize) -> usize {
+    (val as u64 * numerator as u64 / denominator as u64)
+        .try_into()
+        .unwrap_or(usize::MAX)
+}
+
+#[cfg(target_pointer_width = "16")]
+fn saturating_mul_div(val: usize, numerator: usize, denominator: usize) -> usize {
+    (val as u32 * numerator as u32 / denominator as u32)
+        .try_into()
+        .unwrap_or(usize::MAX)
+}
 
 #[cold]
 #[track_caller]
