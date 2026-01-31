@@ -1244,7 +1244,7 @@ fn test_into_iter_zst() {
     impl Drop for AlignedZstWithDrop {
         fn drop(&mut self) {
             let addr = self as *mut _ as usize;
-            assert!(hint::black_box(addr) % mem::align_of::<u64>() == 0);
+            assert!(hint::black_box(addr).is_multiple_of(align_of::<u64>()));
         }
     }
 
