@@ -304,11 +304,7 @@ impl<T> Vec<T> {
     #[inline]
     #[must_use]
     pub fn capacity(&self) -> usize {
-        if T::IS_ZST {
-            usize::MAX
-        } else {
-            self.inner.capacity
-        }
+        self.inner.capacity
     }
 
     /// Returns the number of elements in the vector.
@@ -375,7 +371,16 @@ impl VecInner {
         }
 
         if size == 0 && header_layout.size() == 0 {
-            return Ok(Self::dangling(elem_align));
+            let allocation = Allocation::dangling(elem_align);
+
+            return Ok(VecInner {
+                elements: allocation.ptr().cast(),
+                capacity: max_capacity,
+                len: 0,
+                max_capacity,
+                growth_strategy,
+                allocation,
+            });
         }
 
         // This can't overflow because `Layout`'s size can't exceed `isize::MAX`.
@@ -414,7 +419,7 @@ impl VecInner {
         let elements = aligned_ptr.wrapping_add(elements_offset).cast();
 
         let capacity = if elem_size == 0 {
-            0
+            max_capacity
         } else {
             (initial_size - elements_offset) / elem_size
         };

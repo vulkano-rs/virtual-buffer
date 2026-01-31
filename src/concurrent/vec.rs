@@ -1368,20 +1368,12 @@ impl<T> RawVec<T> {
     #[inline]
     #[must_use]
     pub fn capacity(&self) -> usize {
-        if T::IS_ZST {
-            usize::MAX
-        } else {
-            self.inner.capacity.load(Acquire)
-        }
+        self.inner.capacity.load(Acquire)
     }
 
     #[inline]
     fn capacity_mut(&mut self) -> usize {
-        if T::IS_ZST {
-            usize::MAX
-        } else {
-            *self.inner.capacity.get_mut()
-        }
+        *self.inner.capacity.get_mut()
     }
 
     /// Returns the number of elements in the vector.
@@ -1423,7 +1415,7 @@ impl<T> RawVec<T> {
             let mut len = self.inner.len.load(Relaxed);
 
             loop {
-                if len == usize::MAX {
+                if len == self.inner.max_capacity {
                     capacity_overflow();
                 }
 
@@ -1544,7 +1536,16 @@ impl RawVecInner {
         }
 
         if size == 0 && header_layout.size() == 0 {
-            return Ok(Self::dangling(elem_align));
+            let allocation = Allocation::dangling(elem_align);
+
+            return Ok(RawVecInner {
+                elements: allocation.ptr().cast(),
+                capacity: AtomicUsize::new(max_capacity),
+                len: AtomicUsize::new(0),
+                max_capacity,
+                growth_strategy,
+                allocation,
+            });
         }
 
         // This can't overflow because `Layout`'s size can't exceed `isize::MAX`.
@@ -1583,7 +1584,7 @@ impl RawVecInner {
         let elements = aligned_ptr.wrapping_add(elements_offset).cast();
 
         let capacity = if elem_size == 0 {
-            0
+            max_capacity
         } else {
             (initial_size - elements_offset) / elem_size
         };

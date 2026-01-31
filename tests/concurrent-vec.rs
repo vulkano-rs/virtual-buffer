@@ -327,11 +327,6 @@ fn test_reserve() {
 */
 
 #[test]
-fn test_zst_capacity() {
-    assert_eq!(unsafe { RawVec::<()>::new(0) }.capacity(), usize::MAX);
-}
-
-#[test]
 fn test_indexing() {
     let v: Vec<isize> = vec![10, 20];
     assert_eq!(v[0], 10);
@@ -2073,7 +2068,7 @@ fn test_zero_sized_capacity() {
     for len in [0, 1, 2, 4, 8, 16, 32, 64, 128, 256] {
         let v = unsafe { RawVec::<()>::new(len) };
         assert_eq!(v.len(), 0);
-        assert_eq!(v.capacity(), usize::MAX);
+        assert_eq!(v.capacity(), len);
     }
 }
 
