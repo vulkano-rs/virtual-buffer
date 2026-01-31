@@ -899,16 +899,12 @@ impl<T> ExactSizeIterator for IntoIter<T> {
         if T::IS_ZST {
             self.end.addr().wrapping_sub(self.start.addr())
         } else {
-            // We know that the return value is positive because by our invariant, `self.end` is
-            // always greater or equal to `self.start`.
-            #[allow(clippy::cast_sign_loss)]
             // SAFETY:
+            // * By our invariant, `self.end` is always greater or equal to `self.start`.
             // * `start` and `end` were both created from the same object in `IntoIter::new`.
             // * `Vec::new` ensures that the allocation size doesn't exceed `isize::MAX` bytes.
             // * We know that the allocation doesn't wrap around the address space.
-            unsafe {
-                self.end.offset_from(self.start) as usize
-            }
+            unsafe { self.end.offset_from_unsigned(self.start) }
         }
     }
 }

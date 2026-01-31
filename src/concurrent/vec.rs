@@ -718,16 +718,12 @@ impl<'a, T> Iter<'a, T> {
 
     #[inline]
     fn len(&self) -> usize {
-        // We know that the return value is positive because by our invariant, `self.end` is always
-        // greater or equal to `self.start`.
-        #[allow(clippy::cast_sign_loss)]
         // SAFETY:
+        // * By our invariant, `self.end` is always greater or equal to `self.start`.
         // * `start` and `end` were both created from the same object in `Iter::new`.
         // * `Vec::new` ensures that the allocation size doesn't exceed `isize::MAX` bytes.
         // * We know that the allocation doesn't wrap around the address space.
-        unsafe {
-            self.end().offset_from(self.start()) as usize
-        }
+        unsafe { self.end().offset_from_unsigned(self.start()) }
     }
 
     fn as_slice(&self) -> &[Slot<T>] {
@@ -908,16 +904,12 @@ impl<T> IntoIter<T> {
 
     #[inline]
     fn len(&self) -> usize {
-        // We know that the return value is positive because by our invariant, `self.end` is always
-        // greater or equal to `self.start`.
-        #[allow(clippy::cast_sign_loss)]
         // SAFETY:
+        // * By our invariant, `self.end` is always greater or equal to `self.start`.
         // * `start` and `end` were both created from the same object in `IntoIter::new`.
         // * `Vec::new` ensures that the allocation size doesn't exceed `isize::MAX` bytes.
         // * We know that the allocation doesn't wrap around the address space.
-        unsafe {
-            self.end().offset_from(self.start()) as usize
-        }
+        unsafe { self.end().offset_from_unsigned(self.start()) }
     }
 
     fn as_slice(&self) -> &[Slot<T>] {
