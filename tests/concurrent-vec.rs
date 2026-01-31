@@ -15,7 +15,7 @@
 use std::{alloc::Layout, fmt::Debug, hint, mem, panic::catch_unwind, sync::Barrier, thread};
 use virtual_buffer::{
     align_down,
-    concurrent::vec::{raw, IntoIter, RawVec, Vec},
+    concurrent::vec::{raw, IntoIter, Iter, RawVec, Vec},
     page_size,
     vec::GrowthStrategy,
 };
@@ -1383,6 +1383,9 @@ fn test_into_iter_zst() {
 
 #[allow(dead_code)]
 fn assert_covariance() {
+    fn iter<'new>(i: Iter<'static, &'static str>) -> Iter<'new, &'new str> {
+        i
+    }
     // fn drain<'new>(d: Drain<'static, &'static str>) -> Drain<'new, &'new str> {
     //     d
     // }

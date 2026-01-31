@@ -302,9 +302,7 @@ impl<T> Vec<T> {
     /// Returns an iterator that yields references to elements of the vector.
     #[inline]
     pub fn iter(&self) -> Iter<'_, T> {
-        Iter {
-            inner: self.inner.iter(),
-        }
+        Iter::new(self)
     }
 
     /// Returns an iterator that yields mutable references to elements of the vector.
@@ -678,7 +676,81 @@ impl<T: Ord> Ord for Slot<T> {
 ///
 /// [`iter`]: Vec::iter
 pub struct Iter<'a, T> {
-    inner: slice::Iter<'a, Slot<T>>,
+    start: *const (),
+    end: *const (),
+    marker: PhantomData<&'a T>,
+}
+
+// SAFETY: `Iter<'a, T>` is equivalent to `&'a [T]`.
+unsafe impl<T: Sync> Send for Iter<'_, T> {}
+
+// SAFETY: `Iter<'a, T>` is equivalent to `&'a [T]`.
+unsafe impl<T: Sync> Sync for Iter<'_, T> {}
+
+impl<'a, T> Iter<'a, T> {
+    #[inline]
+    fn new(vec: &Vec<T>) -> Self {
+        let start = vec.inner.as_ptr();
+
+        let len = cmp::min(vec.len(), vec.capacity());
+
+        // SAFETY: The `Acquire` ordering in `RawVec::capacity` synchronizes with the `Release`
+        // ordering when setting the capacity, making sure that the newly committed memory is
+        // visible here.
+        let end = unsafe { start.add(len) };
+
+        Iter {
+            start: start.cast(),
+            end: end.cast(),
+            marker: PhantomData,
+        }
+    }
+
+    #[inline]
+    fn start(&self) -> *const Slot<T> {
+        self.start.cast()
+    }
+
+    #[inline]
+    fn end(&self) -> *const Slot<T> {
+        self.end.cast()
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        // We know that the return value is positive because by our invariant, `self.end` is always
+        // greater or equal to `self.start`.
+        #[allow(clippy::cast_sign_loss)]
+        // SAFETY:
+        // * `start` and `end` were both created from the same object in `Iter::new`.
+        // * `Vec::new` ensures that the allocation size doesn't exceed `isize::MAX` bytes.
+        // * We know that the allocation doesn't wrap around the address space.
+        unsafe {
+            self.end().offset_from(self.start()) as usize
+        }
+    }
+
+    fn as_slice(&self) -> &[Slot<T>] {
+        unsafe { slice::from_raw_parts(self.start(), self.len()) }
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for Iter<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        struct Elements<'a, T>(&'a [Slot<T>]);
+
+        impl<T: fmt::Debug> fmt::Debug for Elements<'_, T> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.debug_list()
+                    .entries(self.0.iter().flat_map(Slot::value))
+                    .finish()
+            }
+        }
+
+        f.debug_tuple("Iter")
+            .field(&Elements(self.as_slice()))
+            .finish()
+    }
 }
 
 impl<'a, T> Iterator for Iter<'a, T> {
@@ -687,7 +759,17 @@ impl<'a, T> Iterator for Iter<'a, T> {
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let slot = self.inner.next()?;
+            if self.start == self.end {
+                break None;
+            }
+
+            let start = self.start();
+
+            // SAFETY: We checked that there are still elements remaining above.
+            self.start = unsafe { start.add(1) }.cast();
+
+            // SAFETY: Same as the previous.
+            let slot = unsafe { &*start };
 
             if let Some(value) = slot.value() {
                 break Some(value);
@@ -697,7 +779,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (0, Some(self.inner.len()))
+        (0, Some(self.len()))
     }
 }
 
@@ -705,7 +787,17 @@ impl<T> DoubleEndedIterator for Iter<'_, T> {
     #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
         loop {
-            let slot = self.inner.next_back()?;
+            if self.start == self.end {
+                break None;
+            }
+
+            // SAFETY: We checked that there are still elements remaining above.
+            let end = unsafe { self.end().sub(1) };
+
+            self.end = end.cast();
+
+            // SAFETY: Same as the previous.
+            let slot = unsafe { &*end };
 
             if let Some(value) = slot.value() {
                 break Some(value);
