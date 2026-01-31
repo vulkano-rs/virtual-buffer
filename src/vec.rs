@@ -39,6 +39,16 @@ struct VecInner {
     allocation: Allocation,
 }
 
+// SAFETY: `Vec` is an owned collection, which makes it safe to send to another thread as long as
+// its element is safe to send to another a thread.
+unsafe impl<T: Send> Send for Vec<T> {}
+
+// SAFETY: `Vec` doesn't allow modifications through a shared reference, so a shared `Vec` can't be
+// used to send elements to another thread. However, `Vec` allows getting a reference to any
+// element from any thread. Therefore, it is safe to share `Vec` between threads as long as the
+// element is shareable.
+unsafe impl<T: Sync> Sync for Vec<T> {}
+
 impl<T> Vec<T> {
     /// Creates a new `Vec`.
     ///
