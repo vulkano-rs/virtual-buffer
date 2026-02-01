@@ -342,9 +342,59 @@ impl<T> Vec<T> {
     #[inline(never)]
     #[track_caller]
     fn grow_one(&mut self) {
-        if let Err(err) = unsafe { self.inner.grow(1, size_of::<T>()) } {
-            handle_error(err);
-        }
+        unsafe { self.inner.grow_one(size_of::<T>()) };
+    }
+
+    /// Reserves capacity for at least `additional` more elements.
+    ///
+    /// Not to be confused with [reserving virtual memory]; this method is named so as to match the
+    /// standard library vector.
+    ///
+    /// The new capacity is at least `self.len() + additional`. If this capacity is below the one
+    /// calculated using the [growth strategy], the latter is used. Does nothing if the capacity is
+    /// already sufficient.
+    ///
+    /// [reserving virtual memory]: crate#reserving
+    /// [growth strategy]: GrowthStrategy
+    #[track_caller]
+    pub fn reserve(&mut self, additional: usize) {
+        unsafe { self.inner.reserve(additional, size_of::<T>()) };
+    }
+
+    /// Reserves the minimum capacity required for `additional` more elements.
+    ///
+    /// Not to be confused with [reserving virtual memory]; this method is named so as to match the
+    /// standard library vector.
+    ///
+    /// The new capacity is at least `self.len() + additional`. The [growth strategy] is ignored,
+    /// but the new capacity can still be greater due to the alignment to the page size. Does
+    /// nothing if the capacity is already sufficient.
+    ///
+    /// [reserving virtual memory]: crate#reserving
+    /// [growth strategy]: GrowthStrategy
+    #[track_caller]
+    pub fn reserve_exact(&mut self, additional: usize) {
+        unsafe { self.inner.reserve_exact(additional, size_of::<T>()) };
+    }
+
+    /// Reserves capacity for at least `additional` more elements.
+    ///
+    /// Like [`reserve`], except returning an error when [committing] the new capacity fails.
+    ///
+    /// [`reserve`]: Self::reserve
+    /// [committing]: crate#committing
+    pub fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
+        unsafe { self.inner.try_reserve(additional, size_of::<T>()) }
+    }
+
+    /// Reserves capacity for exactly `additional` more elements.
+    ///
+    /// Like [`reserve_exact`], except returning an error when [committing] the new capacity fails.
+    ///
+    /// [`reserve_exact`]: Self::reserve
+    /// [committing]: crate#committing
+    pub fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError> {
+        unsafe { self.inner.try_reserve_exact(additional, size_of::<T>()) }
     }
 }
 
@@ -451,7 +501,83 @@ impl VecInner {
         }
     }
 
+    #[inline]
+    #[track_caller]
+    unsafe fn reserve(&mut self, additional: usize, elem_size: usize) {
+        if self.needs_to_grow(additional) {
+            unsafe { self.reserve_slow(additional, elem_size) };
+        }
+    }
+
+    #[cold]
+    #[track_caller]
+    unsafe fn reserve_slow(&mut self, additional: usize, elem_size: usize) {
+        if let Err(err) = unsafe { self.grow(additional, elem_size) } {
+            handle_error(err);
+        }
+    }
+
+    #[track_caller]
+    unsafe fn reserve_exact(&mut self, additional: usize, elem_size: usize) {
+        if let Err(err) = unsafe { self.try_reserve_exact(additional, elem_size) } {
+            handle_error(err);
+        }
+    }
+
+    unsafe fn try_reserve(
+        &mut self,
+        additional: usize,
+        elem_size: usize,
+    ) -> Result<(), TryReserveError> {
+        if self.needs_to_grow(additional) {
+            unsafe { self.grow(additional, elem_size) }
+        } else {
+            Ok(())
+        }
+    }
+
+    unsafe fn try_reserve_exact(
+        &mut self,
+        additional: usize,
+        elem_size: usize,
+    ) -> Result<(), TryReserveError> {
+        if self.needs_to_grow(additional) {
+            unsafe { self.grow_exact(additional, elem_size) }
+        } else {
+            Ok(())
+        }
+    }
+
+    #[inline]
+    fn needs_to_grow(&self, additional: usize) -> bool {
+        additional > self.capacity - self.len
+    }
+
+    #[track_caller]
+    unsafe fn grow_one(&mut self, elem_size: usize) {
+        if let Err(err) = unsafe { self.grow(1, elem_size) } {
+            handle_error(err);
+        }
+    }
+
     unsafe fn grow(&mut self, additional: usize, elem_size: usize) -> Result<(), TryReserveError> {
+        unsafe { self.grow_inner(additional, false, elem_size) }
+    }
+
+    unsafe fn grow_exact(
+        &mut self,
+        additional: usize,
+        elem_size: usize,
+    ) -> Result<(), TryReserveError> {
+        unsafe { self.grow_inner(additional, true, elem_size) }
+    }
+
+    unsafe fn grow_inner(
+        &mut self,
+        additional: usize,
+        exact: bool,
+        elem_size: usize,
+    ) -> Result<(), TryReserveError> {
         debug_assert!(additional > 0);
 
         if elem_size == 0 {
@@ -466,9 +592,12 @@ impl VecInner {
 
         let old_capacity = self.capacity;
 
-        let new_capacity = self.growth_strategy.grow(old_capacity);
-        let new_capacity = cmp::max(new_capacity, required_capacity);
-        let new_capacity = cmp::min(new_capacity, self.max_capacity);
+        let mut new_capacity = required_capacity;
+
+        if !exact {
+            new_capacity = cmp::max(new_capacity, self.growth_strategy.grow(old_capacity));
+            new_capacity = cmp::min(new_capacity, self.max_capacity);
+        }
 
         let elements_offset = self.elements.addr() - self.allocation.ptr().addr();
 
@@ -1049,7 +1178,7 @@ pub(crate) fn handle_alloc_error(err: Error) -> ! {
 /// [commit]: crate#committing
 #[derive(Debug)]
 pub struct TryReserveError {
-    kind: TryReserveErrorKind,
+    pub(crate) kind: TryReserveErrorKind,
 }
 
 impl From<TryReserveErrorKind> for TryReserveError {

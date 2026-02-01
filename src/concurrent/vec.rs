@@ -312,6 +312,58 @@ impl<T> Vec<T> {
             inner: self.inner.iter_mut(),
         }
     }
+
+    /// Reserves capacity for at least `additional` more elements.
+    ///
+    /// Not to be confused with [reserving virtual memory]; this method is named so as to match the
+    /// standard library vector.
+    ///
+    /// The new capacity is at least `self.len() + additional`. If this capacity is below the one
+    /// calculated using the [growth strategy], the latter is used. Does nothing if the capacity is
+    /// already sufficient.
+    ///
+    /// [reserving virtual memory]: crate#reserving
+    /// [growth strategy]: GrowthStrategy
+    #[track_caller]
+    pub fn reserve(&self, additional: usize) {
+        unsafe { self.inner.reserve(additional) };
+    }
+
+    /// Reserves the minimum capacity required for `additional` more elements.
+    ///
+    /// Not to be confused with [reserving virtual memory]; this method is named so as to match the
+    /// standard library vector.
+    ///
+    /// The new capacity is at least `self.len() + additional`. The [growth strategy] is ignored,
+    /// but the new capacity can still be greater due to the alignment to the page size. Does
+    /// nothing if the capacity is already sufficient.
+    ///
+    /// [reserving virtual memory]: crate#reserving
+    /// [growth strategy]: GrowthStrategy
+    #[track_caller]
+    pub fn reserve_exact(&self, additional: usize) {
+        unsafe { self.inner.reserve_exact(additional) };
+    }
+
+    /// Reserves capacity for at least `additional` more elements.
+    ///
+    /// Like [`reserve`], except returning an error when [committing] the new capacity fails.
+    ///
+    /// [`reserve`]: Self::reserve
+    /// [committing]: crate#committing
+    pub fn try_reserve(&self, additional: usize) -> Result<(), TryReserveError> {
+        unsafe { self.inner.try_reserve(additional) }
+    }
+
+    /// Reserves capacity for exactly `additional` more elements.
+    ///
+    /// Like [`reserve_exact`], except returning an error when [committing] the new capacity fails.
+    ///
+    /// [`reserve_exact`]: Self::reserve
+    /// [committing]: crate#committing
+    pub fn try_reserve_exact(&self, additional: usize) -> Result<(), TryReserveError> {
+        unsafe { self.inner.try_reserve_exact(additional) }
+    }
 }
 
 impl<T> AsRef<Vec<T>> for Vec<T> {
@@ -1460,22 +1512,7 @@ impl<T> RawVec<T> {
     #[inline(never)]
     #[track_caller]
     unsafe fn grow_one(&self, len: usize) {
-        if let Err(err) = unsafe { self.inner.grow(len, 1, size_of::<T>()) } {
-            if len >= self.inner.max_capacity {
-                // This can't overflow because `grow_one` must be called after the length was
-                // incremented. It is sound to decrement because it's impossible for an element to
-                // be initialized while the length exceeds `self.inner.max_capacity`. Note that
-                // this is *not* the case when `grow_amortized` fails in general: it can happen
-                // that committing more memory fails on this thread but succeeds on another,
-                // resulting in us decrementing the length while it is below `self.inner.capacity`,
-                // which would lead to two threads getting the same index in `push`. That's why we
-                // must not decrement the length unless it overshot `self.inner.max_capacity`. We
-                // decrement the length in order to prevent an overflow in `push`.
-                self.inner.len.fetch_sub(1, Relaxed);
-            }
-
-            handle_error(err);
-        }
+        unsafe { self.inner.grow_one(len, size_of::<T>()) }
     }
 
     /// Appends an element to the end of the vector.
@@ -1505,11 +1542,59 @@ impl<T> RawVec<T> {
     #[inline(never)]
     #[track_caller]
     unsafe fn grow_one_mut(&mut self) {
-        let len = self.len_mut();
+        unsafe { self.inner.grow_one_mut(size_of::<T>()) }
+    }
 
-        if let Err(err) = unsafe { self.inner.grow(len, 1, size_of::<T>()) } {
-            handle_error(err);
-        }
+    /// Reserves capacity for at least `additional` more elements.
+    ///
+    /// Not to be confused with [reserving virtual memory]; this method is named so as to match the
+    /// standard library vector.
+    ///
+    /// The new capacity is at least `self.len() + additional`. If this capacity is below the one
+    /// calculated using the [growth strategy], the latter is used. Does nothing if the capacity is
+    /// already sufficient.
+    ///
+    /// [reserving virtual memory]: crate#reserving
+    /// [growth strategy]: GrowthStrategy
+    #[track_caller]
+    pub fn reserve(&self, additional: usize) {
+        unsafe { self.inner.reserve(additional, size_of::<T>()) };
+    }
+
+    /// Reserves the minimum capacity required for `additional` more elements.
+    ///
+    /// Not to be confused with [reserving virtual memory]; this method is named so as to match the
+    /// standard library vector.
+    ///
+    /// The new capacity is at least `self.len() + additional`. The [growth strategy] is ignored,
+    /// but the new capacity can still be greater due to the alignment to the page size. Does
+    /// nothing if the capacity is already sufficient.
+    ///
+    /// [reserving virtual memory]: crate#reserving
+    /// [growth strategy]: GrowthStrategy
+    #[track_caller]
+    pub fn reserve_exact(&self, additional: usize) {
+        unsafe { self.inner.reserve_exact(additional, size_of::<T>()) };
+    }
+
+    /// Reserves capacity for at least `additional` more elements.
+    ///
+    /// Like [`reserve`], except returning an error when [committing] the new capacity fails.
+    ///
+    /// [`reserve`]: Self::reserve
+    /// [committing]: crate#committing
+    pub fn try_reserve(&self, additional: usize) -> Result<(), TryReserveError> {
+        unsafe { self.inner.try_reserve(additional, size_of::<T>()) }
+    }
+
+    /// Reserves capacity for exactly `additional` more elements.
+    ///
+    /// Like [`reserve_exact`], except returning an error when [committing] the new capacity fails.
+    ///
+    /// [`reserve_exact`]: Self::reserve
+    /// [committing]: crate#committing
+    pub fn try_reserve_exact(&self, additional: usize) -> Result<(), TryReserveError> {
+        unsafe { self.inner.try_reserve_exact(additional, size_of::<T>()) }
     }
 }
 
@@ -1616,10 +1701,119 @@ impl RawVecInner {
         }
     }
 
+    #[inline]
+    #[track_caller]
+    unsafe fn reserve(&self, additional: usize, elem_size: usize) {
+        let len = self.len.load(Relaxed);
+
+        if self.needs_to_grow(len, additional) {
+            unsafe { self.reserve_slow(len, additional, elem_size) };
+        }
+    }
+
+    #[cold]
+    #[track_caller]
+    unsafe fn reserve_slow(&self, len: usize, additional: usize, elem_size: usize) {
+        if let Err(err) = unsafe { self.grow(len, additional, elem_size) } {
+            handle_error(err);
+        }
+    }
+
+    #[track_caller]
+    unsafe fn reserve_exact(&self, additional: usize, elem_size: usize) {
+        if let Err(err) = unsafe { self.try_reserve_exact(additional, elem_size) } {
+            handle_error(err);
+        }
+    }
+
+    unsafe fn try_reserve(
+        &self,
+        additional: usize,
+        elem_size: usize,
+    ) -> Result<(), TryReserveError> {
+        let len = self.len.load(Relaxed);
+
+        if self.needs_to_grow(len, additional) {
+            unsafe { self.grow(len, additional, elem_size) }
+        } else {
+            Ok(())
+        }
+    }
+
+    unsafe fn try_reserve_exact(
+        &self,
+        additional: usize,
+        elem_size: usize,
+    ) -> Result<(), TryReserveError> {
+        let len = self.len.load(Relaxed);
+
+        if self.needs_to_grow(len, additional) {
+            unsafe { self.grow_exact(len, additional, elem_size) }
+        } else {
+            Ok(())
+        }
+    }
+
+    #[inline]
+    fn needs_to_grow(&self, len: usize, additional: usize) -> bool {
+        let capacity = self.capacity.load(Relaxed);
+        let len = cmp::min(len, capacity);
+
+        additional > capacity - len
+    }
+
+    #[track_caller]
+    unsafe fn grow_one(&self, len: usize, elem_size: usize) {
+        if let Err(err) = unsafe { self.grow(len, 1, elem_size) } {
+            if len >= self.max_capacity {
+                // This can't overflow because `grow_one` must be called after the length was
+                // incremented. It is sound to decrement because it's impossible for an element to
+                // be initialized while the length exceeds `self.max_capacity`. Note that this is
+                // *not* the case when `grow` fails in general: it can happen that committing more
+                // memory fails on this thread but succeeds on another, resulting in us
+                // decrementing the length while it is below `self.capacity`, which would lead to
+                // two threads getting the same index in `push`. That's why we must not decrement
+                // the length unless it overshot `self.max_capacity`. We decrement the length in
+                // order to prevent an overflow in `push`.
+                self.len.fetch_sub(1, Relaxed);
+            }
+
+            handle_error(err);
+        }
+    }
+
+    #[track_caller]
+    unsafe fn grow_one_mut(&mut self, elem_size: usize) {
+        let len = *self.len.get_mut();
+
+        if let Err(err) = unsafe { self.grow(len, 1, elem_size) } {
+            handle_error(err);
+        }
+    }
+
     unsafe fn grow(
         &self,
         len: usize,
         additional: usize,
+        elem_size: usize,
+    ) -> Result<(), TryReserveError> {
+        unsafe { self.grow_inner(len, additional, false, elem_size) }
+    }
+
+    unsafe fn grow_exact(
+        &self,
+        len: usize,
+        additional: usize,
+        elem_size: usize,
+    ) -> Result<(), TryReserveError> {
+        unsafe { self.grow_inner(len, additional, true, elem_size) }
+    }
+
+    unsafe fn grow_inner(
+        &self,
+        len: usize,
+        additional: usize,
+        exact: bool,
         elem_size: usize,
     ) -> Result<(), TryReserveError> {
         debug_assert!(additional > 0);
@@ -1641,9 +1835,12 @@ impl RawVecInner {
             return Ok(());
         }
 
-        let new_capacity = self.growth_strategy.grow(old_capacity);
-        let new_capacity = cmp::max(new_capacity, required_capacity);
-        let new_capacity = cmp::min(new_capacity, self.max_capacity);
+        let mut new_capacity = required_capacity;
+
+        if !exact {
+            new_capacity = cmp::max(new_capacity, self.growth_strategy.grow(old_capacity));
+            new_capacity = cmp::min(new_capacity, self.max_capacity);
+        }
 
         let elements_offset = self.elements.addr() - self.allocation.ptr().addr();
 
