@@ -1128,22 +1128,14 @@ impl GrowthStrategy {
 }
 
 #[cfg(target_pointer_width = "64")]
-fn saturating_mul_div(val: usize, numerator: usize, denominator: usize) -> usize {
-    (val as u128 * numerator as u128 / denominator as u128)
-        .try_into()
-        .unwrap_or(usize::MAX)
-}
-
+type DoubleUsize = u128;
 #[cfg(target_pointer_width = "32")]
-fn saturating_mul_div(val: usize, numerator: usize, denominator: usize) -> usize {
-    (val as u64 * numerator as u64 / denominator as u64)
-        .try_into()
-        .unwrap_or(usize::MAX)
-}
-
+type DoubleUsize = u64;
 #[cfg(target_pointer_width = "16")]
+type DoubleUsize = u32;
+
 fn saturating_mul_div(val: usize, numerator: usize, denominator: usize) -> usize {
-    (val as u32 * numerator as u32 / denominator as u32)
+    (val as DoubleUsize * numerator as DoubleUsize / denominator as DoubleUsize)
         .try_into()
         .unwrap_or(usize::MAX)
 }
