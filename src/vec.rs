@@ -84,6 +84,7 @@ impl<T> Vec<T> {
     ///
     /// [`new`]: Self::new
     /// [reserving]: crate#reserving
+    #[must_use]
     #[track_caller]
     pub fn with_growth_strategy(max_capacity: usize, growth_strategy: GrowthStrategy) -> Self {
         Self::with_growth_strategy_and_header(max_capacity, growth_strategy, Layout::new::<()>())

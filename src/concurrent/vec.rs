@@ -739,7 +739,7 @@ unsafe impl<T: Sync> Send for Iter<'_, T> {}
 // SAFETY: `Iter<'a, T>` is equivalent to `&'a [T]`.
 unsafe impl<T: Sync> Sync for Iter<'_, T> {}
 
-impl<'a, T> Iter<'a, T> {
+impl<T> Iter<'_, T> {
     #[inline]
     fn new(vec: &Vec<T>) -> Self {
         let start = vec.inner.as_ptr();
@@ -790,7 +790,7 @@ impl<T: fmt::Debug> fmt::Debug for Iter<'_, T> {
         impl<T: fmt::Debug> fmt::Debug for Elements<'_, T> {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.debug_list()
-                    .entries(self.0.iter().flat_map(Slot::value))
+                    .entries(self.0.iter().filter_map(Slot::value))
                     .finish()
             }
         }
@@ -976,7 +976,7 @@ impl<T: fmt::Debug> fmt::Debug for IntoIter<T> {
         impl<T: fmt::Debug> fmt::Debug for Elements<'_, T> {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.debug_list()
-                    .entries(self.0.iter().flat_map(Slot::value))
+                    .entries(self.0.iter().filter_map(Slot::value))
                     .finish()
             }
         }
