@@ -619,7 +619,7 @@ mod windows {
         Ok(())
     }
 
-    pub unsafe fn unreserve(ptr: *mut c_void, size: usize) {
+    pub unsafe fn unreserve(ptr: *mut c_void, _size: usize) {
         unsafe { VirtualFree(ptr, 0, MEM_RELEASE) };
     }
 
