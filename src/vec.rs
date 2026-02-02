@@ -16,6 +16,106 @@ use core::{
     slice::{self, SliceIndex},
 };
 
+/// Used to create a new vector.
+///
+/// This struct is created by the [`builder`] method on [`Vec`].
+///
+/// [`builder`]: Vec::builder
+#[derive(Clone, Copy, Debug)]
+pub struct VecBuilder {
+    max_capacity: usize,
+    growth_strategy: GrowthStrategy,
+    header_layout: Layout,
+}
+
+impl VecBuilder {
+    #[inline]
+    const fn new(max_capacity: usize) -> Self {
+        VecBuilder {
+            max_capacity,
+            growth_strategy: GrowthStrategy::Exponential {
+                numerator: 2,
+                denominator: 1,
+            },
+            header_layout: Layout::new::<()>(),
+        }
+    }
+
+    /// The built `Vec` will have the given `growth_strategy`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `growth_strategy` isn't valid per the documentation of [`GrowthStrategy`].
+    #[inline]
+    #[track_caller]
+    pub const fn growth_strategy(&mut self, growth_strategy: GrowthStrategy) -> &mut Self {
+        growth_strategy.validate();
+
+        self.growth_strategy = growth_strategy;
+
+        self
+    }
+
+    /// The built `Vec` will have a header with the given `header_layout`.
+    ///
+    /// `header_layout.size()` bytes will be allocated before the start of the vector's elements,
+    /// with the start aligned to `header_layout.align()`. You can use [`Vec::as_ptr`] and offset
+    /// backwards to access the header.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `header_layout` is not padded to its alignment.
+    #[inline]
+    #[track_caller]
+    pub const fn header(&mut self, header_layout: Layout) -> &mut Self {
+        assert!(is_aligned(header_layout.size(), header_layout.align()));
+
+        self.header_layout = header_layout;
+
+        self
+    }
+
+    /// Builds the `Vec`.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if the `max_capacity` would exceed `isize::MAX` bytes.
+    /// - Panics if [reserving] the allocation returns an error.
+    ///
+    /// [reserving]: crate#reserving
+    #[must_use]
+    #[track_caller]
+    pub fn build<T>(&self) -> Vec<T> {
+        match self.try_build() {
+            Ok(vec) => vec,
+            Err(err) => handle_error(err),
+        }
+    }
+
+    /// Tries to build the `Vec`, returning an error when allocation fails.
+    ///
+    /// # Errors
+    ///
+    /// - Returns an error if the `max_capacity` would exceed `isize::MAX` bytes.
+    /// - Returns an error if [reserving] the allocation returns an error.
+    ///
+    /// [reserving]: crate#reserving
+    pub fn try_build<T>(&self) -> Result<Vec<T>, TryReserveError> {
+        Ok(Vec {
+            inner: unsafe {
+                VecInner::new(
+                    self.max_capacity,
+                    self.growth_strategy,
+                    self.header_layout,
+                    size_of::<T>(),
+                    align_of::<T>(),
+                )
+            }?,
+            marker: PhantomData,
+        })
+    }
+}
+
 /// An in-place growable vector.
 ///
 /// This type behaves similarly to the standard library `Vec` except that it is guaranteed to never
@@ -49,12 +149,32 @@ unsafe impl<T: Send> Send for Vec<T> {}
 // element is shareable.
 unsafe impl<T: Sync> Sync for Vec<T> {}
 
+impl Vec<()> {
+    /// Returns a builder for a new `Vec`.
+    ///
+    /// `max_capacity` is the maximum capacity the vector can ever have. The vector is guaranteed
+    /// to never exceed this capacity. The capacity can be excessively huge, as none of the memory
+    /// is [committed] until you push elements into the vector or reserve capacity.
+    ///
+    /// This function is implemented on `Vec<()>` so that you don't have to import the `VecBuilder`
+    /// type too. The type parameter has no relation to the built `Vec`.
+    ///
+    /// [committed]: crate#committing
+    #[inline]
+    #[must_use]
+    pub const fn builder(max_capacity: usize) -> VecBuilder {
+        VecBuilder::new(max_capacity)
+    }
+}
+
 impl<T> Vec<T> {
     /// Creates a new `Vec`.
     ///
     /// `max_capacity` is the maximum capacity the vector can ever have. The vector is guaranteed
     /// to never exceed this capacity. The capacity can be excessively huge, as none of the memory
-    /// is [committed] until you push elements into the vector.
+    /// is [committed] until you push elements into the vector or reserve capacity.
+    ///
+    /// See the [`builder`] function for more creation options.
     ///
     /// # Panics
     ///
@@ -62,193 +182,12 @@ impl<T> Vec<T> {
     /// - Panics if [reserving] the allocation returns an error.
     ///
     /// [committed]: crate#committing
+    /// [`builder`]: Self::builder
     /// [reserving]: crate#reserving
     #[must_use]
     #[track_caller]
     pub fn new(max_capacity: usize) -> Self {
-        Self::with_header(max_capacity, Layout::new::<()>())
-    }
-
-    /// Creates a new `Vec`.
-    ///
-    /// Like [`new`], except allowing you to specify the growth strategy.
-    ///
-    /// # Panics
-    ///
-    /// - Panics if `growth_strategy` isn't valid per the documentation of [`GrowthStrategy`].
-    ///
-    /// # Errors
-    ///
-    /// - Returns an error if the `max_capacity` would exceed `isize::MAX` bytes.
-    /// - Returns an error if [reserving] the allocation returns an error.
-    ///
-    /// [`new`]: Self::new
-    /// [reserving]: crate#reserving
-    #[must_use]
-    #[track_caller]
-    pub fn with_growth_strategy(max_capacity: usize, growth_strategy: GrowthStrategy) -> Self {
-        Self::with_growth_strategy_and_header(max_capacity, growth_strategy, Layout::new::<()>())
-    }
-
-    /// Creates a new `Vec`.
-    ///
-    /// Like [`new`], except additionally allocating a header. `header_layout.size()` bytes will be
-    /// allocated before the start of the vector's elements, with the start aligned to
-    /// `header_layout.align()`. You can use [`as_ptr`] and offset backwards to access the header.
-    ///
-    /// # Panics
-    ///
-    /// - Panics if `header_layout` is not padded to its alignment.
-    /// - Panics if the `max_capacity` would exceed `isize::MAX` bytes.
-    /// - Panics if [reserving] the allocation returns an error.
-    ///
-    /// [`new`]: Self::try_new
-    /// [`as_ptr`]: Self::as_ptr
-    /// [reserving]: crate#reserving
-    #[must_use]
-    #[track_caller]
-    pub fn with_header(max_capacity: usize, header_layout: Layout) -> Self {
-        Self::with_growth_strategy_and_header(
-            max_capacity,
-            GrowthStrategy::default(),
-            header_layout,
-        )
-    }
-
-    /// Creates a new `Vec`.
-    ///
-    /// Like [`with_growth_strategy`] and [`with_header`] combined.
-    ///
-    /// # Panics
-    ///
-    /// - Panics if `growth_strategy` isn't valid per the documentation of [`GrowthStrategy`].
-    /// - Panics if `header_layout` is not padded to its alignment.
-    /// - Panics if the `max_capacity` would exceed `isize::MAX` bytes.
-    /// - Panics if [reserving] the allocation returns an error.
-    ///
-    /// [`with_growth_strategy`]: Self::try_new
-    /// [`with_header`]: Self::with_header
-    /// [reserving]: crate#reserving
-    #[must_use]
-    #[track_caller]
-    pub fn with_growth_strategy_and_header(
-        max_capacity: usize,
-        growth_strategy: GrowthStrategy,
-        header_layout: Layout,
-    ) -> Self {
-        match Self::try_with_growth_strategy_and_header(
-            max_capacity,
-            growth_strategy,
-            header_layout,
-        ) {
-            Ok(vec) => vec,
-            Err(err) => handle_error(err),
-        }
-    }
-
-    /// Creates a new `Vec`.
-    ///
-    /// Like [`new`], except returning an error when allocation fails.
-    ///
-    /// # Errors
-    ///
-    /// - Returns an error if the `max_capacity` would exceed `isize::MAX` bytes.
-    /// - Returns an error if [reserving] the allocation returns an error.
-    ///
-    /// [`new`]: Self::new
-    /// [reserving]: crate#reserving
-    pub fn try_new(max_capacity: usize) -> Result<Self, TryReserveError> {
-        Self::try_with_header(max_capacity, Layout::new::<()>())
-    }
-
-    /// Creates a new `Vec`.
-    ///
-    /// Like [`with_growth_strategy`], except returning an error when allocation fails.
-    ///
-    /// # Panics
-    ///
-    /// - Panics if `growth_strategy` isn't valid per the documentation of [`GrowthStrategy`].
-    ///
-    /// # Errors
-    ///
-    /// - Returns an error if the `max_capacity` would exceed `isize::MAX` bytes.
-    /// - Returns an error if [reserving] the allocation returns an error.
-    ///
-    /// [`with_growth_strategy`]: Self::with_growth_strategy
-    /// [reserving]: crate#reserving
-    #[track_caller]
-    pub fn try_with_growth_strategy(
-        max_capacity: usize,
-        growth_strategy: GrowthStrategy,
-    ) -> Result<Self, TryReserveError> {
-        Self::try_with_growth_strategy_and_header(
-            max_capacity,
-            growth_strategy,
-            Layout::new::<()>(),
-        )
-    }
-
-    /// Creates a new `Vec`.
-    ///
-    /// Like [`with_header`], except returning an error when allocation fails.
-    ///
-    /// # Panics
-    ///
-    /// - Panics if `header_layout` is not padded to its alignment.
-    ///
-    /// # Errors
-    ///
-    /// - Returns an error if the `max_capacity` would exceed `isize::MAX` bytes.
-    /// - Returns an error if [reserving] the allocation returns an error.
-    ///
-    /// [`with_header`]: Self::with_header
-    /// [reserving]: crate#reserving
-    #[track_caller]
-    pub fn try_with_header(
-        max_capacity: usize,
-        header_layout: Layout,
-    ) -> Result<Self, TryReserveError> {
-        Self::try_with_growth_strategy_and_header(
-            max_capacity,
-            GrowthStrategy::default(),
-            header_layout,
-        )
-    }
-
-    /// Creates a new `Vec`.
-    ///
-    /// Like [`with_growth_strategy_and_header`], except returning an error when allocation fails.
-    ///
-    /// # Panics
-    ///
-    /// - Panics if `growth_strategy` isn't valid per the documentation of [`GrowthStrategy`].
-    /// - Panics if `header_layout` is not padded to its alignment.
-    ///
-    /// # Errors
-    ///
-    /// - Returns an error if the `max_capacity` would exceed `isize::MAX` bytes.
-    /// - Returns an error if [reserving] the allocation returns an error.
-    ///
-    /// [`with_growth_strategy_and_header`]: Self::with_growth_strategy_and_header
-    /// [reserving]: crate#reserving
-    #[track_caller]
-    pub fn try_with_growth_strategy_and_header(
-        max_capacity: usize,
-        growth_strategy: GrowthStrategy,
-        header_layout: Layout,
-    ) -> Result<Self, TryReserveError> {
-        Ok(Vec {
-            inner: unsafe {
-                VecInner::new(
-                    max_capacity,
-                    growth_strategy,
-                    header_layout,
-                    size_of::<T>(),
-                    align_of::<T>(),
-                )
-            }?,
-            marker: PhantomData,
-        })
+        VecBuilder::new(max_capacity).build()
     }
 
     /// Creates a dangling `Vec`.
@@ -408,10 +347,6 @@ impl VecInner {
         elem_size: usize,
         elem_align: usize,
     ) -> Result<Self, TryReserveError> {
-        growth_strategy.validate();
-
-        assert!(is_aligned(header_layout.size(), header_layout.align()));
-
         let size = max_capacity
             .checked_mul(elem_size)
             .ok_or(CapacityOverflow)?;
@@ -1094,17 +1029,17 @@ impl Default for GrowthStrategy {
 
 impl GrowthStrategy {
     #[track_caller]
-    pub(crate) fn validate(&self) {
+    pub(crate) const fn validate(&self) {
         match *self {
             Self::Exponential {
                 numerator,
                 denominator,
             } => {
                 assert!(numerator > denominator);
-                assert_ne!(denominator, 0);
+                assert!(denominator != 0);
             }
             Self::Linear { elements } => {
-                assert_ne!(elements, 0);
+                assert!(elements != 0);
             }
         }
     }

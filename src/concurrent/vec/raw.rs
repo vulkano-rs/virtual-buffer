@@ -1,11 +1,123 @@
 //! A low-level, concurrent, in-place growable vector.
 
-use super::RawVec;
-use crate::{Allocation, SizedTypeProperties};
-use core::{
-    cmp, fmt, iter::FusedIterator, marker::PhantomData, mem::ManuallyDrop, panic::UnwindSafe, ptr,
-    slice,
+use super::{RawVec, RawVecInner};
+use crate::{
+    is_aligned,
+    vec::{handle_error, GrowthStrategy, TryReserveError},
+    Allocation, SizedTypeProperties,
 };
+use core::{
+    alloc::Layout, cmp, fmt, iter::FusedIterator, marker::PhantomData, mem::ManuallyDrop,
+    panic::UnwindSafe, ptr, slice,
+};
+
+/// Used to build a new vector.
+///
+/// This struct is created by the [`builder`] method on [`RawVec`].
+///
+/// [`builder`]: RawVec::builder
+#[derive(Clone, Copy, Debug)]
+pub struct VecBuilder {
+    max_capacity: usize,
+    growth_strategy: GrowthStrategy,
+    header_layout: Layout,
+}
+
+impl VecBuilder {
+    #[inline]
+    pub(super) const fn new(max_capacity: usize) -> Self {
+        VecBuilder {
+            max_capacity,
+            growth_strategy: GrowthStrategy::Exponential {
+                numerator: 2,
+                denominator: 1,
+            },
+            header_layout: Layout::new::<()>(),
+        }
+    }
+
+    /// The built `Vec` will have the given `growth_strategy`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `growth_strategy` isn't valid per the documentation of [`GrowthStrategy`].
+    #[inline]
+    #[track_caller]
+    pub const fn growth_strategy(&mut self, growth_strategy: GrowthStrategy) -> &mut Self {
+        growth_strategy.validate();
+
+        self.growth_strategy = growth_strategy;
+
+        self
+    }
+
+    /// The built `Vec` will have a header with the given `header_layout`.
+    ///
+    /// `header_layout.size()` bytes will be allocated before the start of the vector's elements,
+    /// with the start aligned to `header_layout.align()`. You can use [`RawVec::as_ptr`] and
+    /// offset backwards to access the header.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `header_layout` is not padded to its alignment.
+    #[inline]
+    #[track_caller]
+    pub const fn header(&mut self, header_layout: Layout) -> &mut Self {
+        assert!(is_aligned(header_layout.size(), header_layout.align()));
+
+        self.header_layout = header_layout;
+
+        self
+    }
+
+    /// Builds the `Vec`.
+    ///
+    /// # Safety
+    ///
+    /// `T` must be zeroable.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if the `max_capacity` would exceed `isize::MAX` bytes.
+    /// - Panics if [reserving] the allocation returns an error.
+    ///
+    /// [reserving]: crate#reserving
+    #[must_use]
+    #[track_caller]
+    pub unsafe fn build<T>(&self) -> RawVec<T> {
+        match unsafe { self.try_build() } {
+            Ok(vec) => vec,
+            Err(err) => handle_error(err),
+        }
+    }
+
+    /// Tries to build the `Vec`, returning an error when allocation fails.
+    ///
+    /// # Safety
+    ///
+    /// `T` must be zeroable.
+    ///
+    /// # Errors
+    ///
+    /// - Returns an error if the `max_capacity` would exceed `isize::MAX` bytes.
+    /// - Returns an error if [reserving] the allocation returns an error.
+    ///
+    /// [reserving]: crate#reserving
+    pub unsafe fn try_build<T>(&self) -> Result<RawVec<T>, TryReserveError> {
+        Ok(RawVec {
+            inner: unsafe {
+                RawVecInner::new(
+                    self.max_capacity,
+                    self.growth_strategy,
+                    self.header_layout,
+                    size_of::<T>(),
+                    align_of::<T>(),
+                )
+            }?,
+            marker: PhantomData,
+        })
+    }
+}
 
 /// An iterator that moves out of a vector.
 ///

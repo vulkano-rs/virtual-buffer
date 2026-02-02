@@ -362,7 +362,7 @@ pub const fn align_down(val: usize, alignment: usize) -> usize {
     val & !(alignment - 1)
 }
 
-fn is_aligned(val: usize, alignment: usize) -> bool {
+const fn is_aligned(val: usize, alignment: usize) -> bool {
     debug_assert!(alignment.is_power_of_two());
 
     val & (alignment - 1) == 0

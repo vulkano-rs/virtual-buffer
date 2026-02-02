@@ -53,7 +53,7 @@ fn growth_strategy_overflow() {
         numerator: usize::MAX,
         denominator: 1,
     };
-    let mut vec = Vec::<i32>::with_growth_strategy(10, growth_strategy);
+    let mut vec = Vec::builder(10).growth_strategy(growth_strategy).build();
     vec.push(42);
     assert_eq!(vec.capacity(), 10);
 
@@ -61,14 +61,14 @@ fn growth_strategy_overflow() {
         numerator: usize::MAX,
         denominator: usize::MAX - 1,
     };
-    let mut vec = Vec::<i32>::with_growth_strategy(10, growth_strategy);
+    let mut vec = Vec::builder(10).growth_strategy(growth_strategy).build();
     vec.push(42);
     assert_eq!(vec.capacity(), 10);
 
     let growth_strategy = GrowthStrategy::Linear {
         elements: usize::MAX,
     };
-    let mut vec = Vec::<i32>::with_growth_strategy(10, growth_strategy);
+    let mut vec = Vec::builder(10).growth_strategy(growth_strategy).build();
     vec.push(42);
     assert_eq!(vec.capacity(), 10);
 }
@@ -80,7 +80,9 @@ fn invalid_growth_strategy_1() {
         numerator: 1,
         denominator: 2,
     };
-    let _ = Vec::<i32>::with_growth_strategy(1, growth_strategy);
+    let _ = Vec::builder(1)
+        .growth_strategy(growth_strategy)
+        .build::<i32>();
 }
 
 #[test]
@@ -90,7 +92,9 @@ fn invalid_growth_strategy_2() {
         numerator: 1,
         denominator: 1,
     };
-    let _ = Vec::<i32>::with_growth_strategy(1, growth_strategy);
+    let _ = Vec::builder(1)
+        .growth_strategy(growth_strategy)
+        .build::<i32>();
 }
 
 #[test]
@@ -100,14 +104,18 @@ fn invalid_growth_strategy_3() {
         numerator: 2,
         denominator: 0,
     };
-    let _ = Vec::<i32>::with_growth_strategy(1, growth_strategy);
+    let _ = Vec::builder(1)
+        .growth_strategy(growth_strategy)
+        .build::<i32>();
 }
 
 #[test]
 #[should_panic]
 fn invalid_growth_strategy_4() {
     let growth_strategy = GrowthStrategy::Linear { elements: 0 };
-    let _ = Vec::<i32>::with_growth_strategy(1, growth_strategy);
+    let _ = Vec::builder(1)
+        .growth_strategy(growth_strategy)
+        .build::<i32>();
 }
 
 #[test]
@@ -116,7 +124,7 @@ fn header_alignment() {
         let align = 1 << align_log2;
         let size = 4 * align;
         let header_layout = Layout::from_size_align(size, align).unwrap();
-        let mut vec = Vec::<u8>::with_header(1, header_layout);
+        let mut vec = Vec::builder(1).header(header_layout).build::<u8>();
         assert_eq!(vec.as_ptr().addr() % align, 0);
         unsafe { *vec.as_mut_ptr().sub(size) = 0 };
     }
@@ -125,7 +133,7 @@ fn header_alignment() {
 #[test]
 fn header_and_zero_max_capacity() {
     let header_layout = Layout::new::<[u64; 8]>();
-    let vec = Vec::<i32>::with_header(0, header_layout);
+    let vec = Vec::builder(0).header(header_layout).build::<i32>();
     let addr = vec.as_ptr().addr();
     assert_eq!(addr - size_of::<[u64; 8]>(), align_down(addr, page_size()));
 }
@@ -134,7 +142,9 @@ fn header_and_zero_max_capacity() {
 #[should_panic = "capacity overflow"]
 fn oversized_header() {
     let header_layout = Layout::from_size_align(isize::MAX as usize, 1).unwrap();
-    let _ = Vec::<u8>::with_header(isize::MAX as usize, header_layout);
+    let _ = Vec::builder(isize::MAX as usize)
+        .header(header_layout)
+        .build::<u8>();
 }
 
 #[test]
@@ -143,7 +153,7 @@ fn overaligned_element() {
     struct Overaligned(#[allow(dead_code)] u8);
 
     let header_layout = Layout::new::<u8>();
-    let mut vec = Vec::<Overaligned>::with_header(4, header_layout);
+    let mut vec = Vec::builder(4).header(header_layout).build::<Overaligned>();
     let align = align_of::<Overaligned>();
     assert_eq!(vec.as_ptr().addr() % align, 0);
     unsafe { *vec.as_mut_ptr().cast::<u8>().sub(align) = 0 };
@@ -153,7 +163,7 @@ fn overaligned_element() {
 #[should_panic]
 fn unpadded_header() {
     let header_layout = Layout::from_size_align(1, 2).unwrap();
-    let _ = Vec::<u8>::with_header(1, header_layout);
+    let _ = Vec::builder(1).header(header_layout).build::<u8>();
 }
 
 struct DropCounter<'a> {
