@@ -19,6 +19,7 @@ use core::{
 #[derive(Clone, Copy, Debug)]
 pub struct VecBuilder {
     max_capacity: usize,
+    capacity: usize,
     growth_strategy: GrowthStrategy,
     header_layout: Layout,
 }
@@ -28,6 +29,7 @@ impl VecBuilder {
     pub(super) const fn new(max_capacity: usize) -> Self {
         VecBuilder {
             max_capacity,
+            capacity: 0,
             growth_strategy: GrowthStrategy::Exponential {
                 numerator: 2,
                 denominator: 1,
@@ -36,7 +38,17 @@ impl VecBuilder {
         }
     }
 
-    /// The built `Vec` will have the given `growth_strategy`.
+    /// The built `RawVec` will have the minimum capacity required for `capacity` elements.
+    ///
+    /// The capacity can be greater due to the alignment to the page size.
+    #[inline]
+    pub const fn capacity(&mut self, capacity: usize) -> &mut Self {
+        self.capacity = capacity;
+
+        self
+    }
+
+    /// The built `RawVec` will have the given `growth_strategy`.
     ///
     /// # Panics
     ///
@@ -51,7 +63,7 @@ impl VecBuilder {
         self
     }
 
-    /// The built `Vec` will have a header with the given `header_layout`.
+    /// The built `RawVec` will have a header with the given `header_layout`.
     ///
     /// `header_layout.size()` bytes will be allocated before the start of the vector's elements,
     /// with the start aligned to `header_layout.align()`. You can use [`RawVec::as_ptr`] and
@@ -70,7 +82,7 @@ impl VecBuilder {
         self
     }
 
-    /// Builds the `Vec`.
+    /// Builds the `RawVec`.
     ///
     /// # Safety
     ///
@@ -79,6 +91,7 @@ impl VecBuilder {
     /// # Panics
     ///
     /// - Panics if the `max_capacity` would exceed `isize::MAX` bytes.
+    /// - Panics if the `capacity` is greater than the `max_capacity`.
     /// - Panics if [reserving] the allocation returns an error.
     ///
     /// [reserving]: crate#reserving
@@ -91,7 +104,7 @@ impl VecBuilder {
         }
     }
 
-    /// Tries to build the `Vec`, returning an error when allocation fails.
+    /// Tries to build the `RawVec`, returning an error when allocation fails.
     ///
     /// # Safety
     ///
@@ -100,6 +113,7 @@ impl VecBuilder {
     /// # Errors
     ///
     /// - Returns an error if the `max_capacity` would exceed `isize::MAX` bytes.
+    /// - Returns an error if the `capacity` is greater than the `max_capacity`.
     /// - Returns an error if [reserving] the allocation returns an error.
     ///
     /// [reserving]: crate#reserving
@@ -108,6 +122,7 @@ impl VecBuilder {
             inner: unsafe {
                 RawVecInner::new(
                     self.max_capacity,
+                    self.capacity,
                     self.growth_strategy,
                     self.header_layout,
                     size_of::<T>(),

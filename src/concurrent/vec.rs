@@ -37,6 +37,7 @@ pub mod raw;
 #[derive(Clone, Copy, Debug)]
 pub struct VecBuilder {
     max_capacity: usize,
+    capacity: usize,
     growth_strategy: GrowthStrategy,
 }
 
@@ -45,11 +46,22 @@ impl VecBuilder {
     const fn new(max_capacity: usize) -> Self {
         VecBuilder {
             max_capacity,
+            capacity: 0,
             growth_strategy: GrowthStrategy::Exponential {
                 numerator: 2,
                 denominator: 1,
             },
         }
+    }
+
+    /// The built `Vec` will have the minimum capacity required for `capacity` elements.
+    ///
+    /// The capacity can be greater due to the alignment to the page size.
+    #[inline]
+    pub const fn capacity(&mut self, capacity: usize) -> &mut Self {
+        self.capacity = capacity;
+
+        self
     }
 
     /// The built `Vec` will have the given `growth_strategy`.
@@ -72,6 +84,7 @@ impl VecBuilder {
     /// # Panics
     ///
     /// - Panics if the `max_capacity` would exceed `isize::MAX` bytes.
+    /// - Panics if the `capacity` is greater than the `max_capacity`.
     /// - Panics if [reserving] the allocation returns an error.
     ///
     /// [reserving]: crate#reserving
@@ -89,6 +102,7 @@ impl VecBuilder {
     /// # Errors
     ///
     /// - Returns an error if the `max_capacity` would exceed `isize::MAX` bytes.
+    /// - Returns an error if the `capacity` is greater than the `max_capacity`.
     /// - Returns an error if [reserving] the allocation returns an error.
     ///
     /// [reserving]: crate#reserving
@@ -98,6 +112,7 @@ impl VecBuilder {
                 inner: unsafe {
                     RawVecInner::new(
                         self.max_capacity,
+                        self.capacity,
                         self.growth_strategy,
                         Layout::new::<()>(),
                         size_of::<T>(),
@@ -1155,6 +1170,7 @@ impl<T> RawVec<T> {
     /// - Panics if [reserving] the allocation returns an error.
     ///
     /// [committed]: crate#committing
+    /// [`builder`]: Self::builder
     /// [reserving]: crate#reserving
     #[must_use]
     #[track_caller]
@@ -1439,9 +1455,9 @@ impl<T> RawVec<T> {
 }
 
 impl RawVecInner {
-    #[track_caller]
     unsafe fn new(
         max_capacity: usize,
+        capacity: usize,
         growth_strategy: GrowthStrategy,
         header_layout: Layout,
         elem_size: usize,
@@ -1452,7 +1468,7 @@ impl RawVecInner {
             .ok_or(CapacityOverflow)?;
 
         #[allow(clippy::cast_possible_wrap)]
-        if size > isize::MAX as usize {
+        if size > isize::MAX as usize || capacity > max_capacity {
             return Err(CapacityOverflow.into());
         }
 
@@ -1494,7 +1510,9 @@ impl RawVecInner {
 
         let allocation = Allocation::new(size).map_err(AllocError)?;
         let aligned_ptr = allocation.ptr().map_addr(|addr| align_up(addr, align));
-        let initial_size = align_up(elements_offset, page_size);
+
+        // This can't overflow because the size is already allocated.
+        let initial_size = align_up(elements_offset + capacity * elem_size, page_size);
 
         if initial_size != 0 {
             allocation
