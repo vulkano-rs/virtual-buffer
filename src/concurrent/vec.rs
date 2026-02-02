@@ -326,7 +326,7 @@ impl<T> Vec<T> {
     /// [growth strategy]: GrowthStrategy
     #[track_caller]
     pub fn reserve(&self, additional: usize) {
-        unsafe { self.inner.reserve(additional) };
+        self.inner.reserve(additional);
     }
 
     /// Reserves the minimum capacity required for `additional` more elements.
@@ -342,7 +342,7 @@ impl<T> Vec<T> {
     /// [growth strategy]: GrowthStrategy
     #[track_caller]
     pub fn reserve_exact(&self, additional: usize) {
-        unsafe { self.inner.reserve_exact(additional) };
+        self.inner.reserve_exact(additional);
     }
 
     /// Reserves capacity for at least `additional` more elements.
@@ -352,7 +352,7 @@ impl<T> Vec<T> {
     /// [`reserve`]: Self::reserve
     /// [committing]: crate#committing
     pub fn try_reserve(&self, additional: usize) -> Result<(), TryReserveError> {
-        unsafe { self.inner.try_reserve(additional) }
+        self.inner.try_reserve(additional)
     }
 
     /// Reserves capacity for exactly `additional` more elements.
@@ -362,7 +362,7 @@ impl<T> Vec<T> {
     /// [`reserve_exact`]: Self::reserve
     /// [committing]: crate#committing
     pub fn try_reserve_exact(&self, additional: usize) -> Result<(), TryReserveError> {
-        unsafe { self.inner.try_reserve_exact(additional) }
+        self.inner.try_reserve_exact(additional)
     }
 }
 
