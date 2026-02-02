@@ -22,3 +22,10 @@ windows-targets = "0.52"
 default = ["std"]
 std = ["libc/std", "alloc"]
 alloc = []
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "forbid"
+unused_unsafe = "allow"
+
+[lints.clippy]
+inline_always = "allow"

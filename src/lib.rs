@@ -75,13 +75,6 @@
 //! [the `concurrent::vec` module]: self::concurrent::vec
 //! [prefaulted]: self#prefaulting
 
-#![allow(
-    unused_unsafe,
-    clippy::doc_markdown,
-    clippy::inline_always,
-    clippy::unused_self
-)]
-#![forbid(unsafe_op_in_unsafe_fn)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
 #[cfg(not(any(unix, windows)))]
