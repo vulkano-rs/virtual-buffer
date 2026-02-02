@@ -94,7 +94,11 @@ extern crate alloc;
 use self::unix as sys;
 #[cfg(windows)]
 use self::windows as sys;
-use core::fmt;
+use core::{
+    fmt,
+    ptr::{self, NonNull},
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 pub mod concurrent;
 pub mod vec;
@@ -105,9 +109,19 @@ pub mod vec;
 /// See also [the crate-level documentation] for more information about virtual memory.
 ///
 /// [the crate-level documentation]: self
+#[derive(Debug)]
 pub struct Allocation {
-    inner: sys::Allocation,
+    ptr: NonNull<u8>,
+    size: usize,
 }
+
+// SAFETY: It is safe to send `Allocation::ptr` to another thread because it is a heap allocation
+// and we own it.
+unsafe impl Send for Allocation {}
+
+// SAFETY: It is safe to share `Allocation::ptr` between threads because the user would have to use
+// unsafe code themself by dereferencing it.
+unsafe impl Sync for Allocation {}
 
 impl Allocation {
     /// Allocates a new region in the process's virtual address space.
@@ -135,9 +149,12 @@ impl Allocation {
         assert!(is_aligned(size, page_size()));
         assert_ne!(size, 0);
 
-        let inner = sys::Allocation::new(size)?;
+        let ptr = sys::reserve(size)?;
 
-        Ok(Allocation { inner })
+        Ok(Allocation {
+            ptr: NonNull::new(ptr.cast()).unwrap(),
+            size,
+        })
     }
 
     /// Creates a dangling `Allocation`, that is, an allocation with a dangling pointer and zero
@@ -154,9 +171,14 @@ impl Allocation {
     #[inline]
     #[must_use]
     pub const fn dangling(alignment: usize) -> Allocation {
-        let inner = sys::Allocation::dangling(alignment);
+        assert!(alignment.is_power_of_two());
 
-        Allocation { inner }
+        Allocation {
+            // SAFETY: We checked that `alignment` is a power of two, which means it must be
+            // non-zero.
+            ptr: unsafe { NonNull::new_unchecked(ptr::without_provenance_mut(alignment)) },
+            size: 0,
+        }
     }
 
     /// Returns the pointer to the beginning of the allocation.
@@ -175,7 +197,7 @@ impl Allocation {
     #[inline]
     #[must_use]
     pub const fn ptr(&self) -> *mut u8 {
-        self.inner.ptr().cast()
+        self.ptr.as_ptr()
     }
 
     /// Returns the size that was used to [allocate] `self`.
@@ -184,7 +206,7 @@ impl Allocation {
     #[inline]
     #[must_use]
     pub const fn size(&self) -> usize {
-        self.inner.size()
+        self.size
     }
 
     /// [Commits] the given region of memory.
@@ -204,11 +226,14 @@ impl Allocation {
     /// [dangling]: Self::dangling
     /// [page size]: self#pages
     #[track_caller]
-    pub fn commit(&self, ptr: *mut u8, size: usize) -> Result<()> {
+    pub fn commit(&self, ptr: *mut u8, size: usize) -> Result {
         self.check_range(ptr, size);
 
-        // SAFETY: Enforced by the `check_range` call above.
-        unsafe { self.inner.commit(ptr.cast(), size) }
+        // SAFETY: We checked that `ptr` and `size` are in bounds of the allocation such that no
+        // other allocations can be affected and that `ptr` is aligned to the page size. As for
+        // this allocation, the only way to access it is by unsafely dererencing its pointer, where
+        // the user has the responsibility to make sure that that is valid.
+        unsafe { sys::commit(ptr.cast(), size) }
     }
 
     /// [Decommits] the given region of memory.
@@ -228,11 +253,14 @@ impl Allocation {
     /// [dangling]: Self::dangling
     /// [page size]: self#pages
     #[track_caller]
-    pub fn decommit(&self, ptr: *mut u8, size: usize) -> Result<()> {
+    pub fn decommit(&self, ptr: *mut u8, size: usize) -> Result {
         self.check_range(ptr, size);
 
-        // SAFETY: Enforced by the `check_range` call above.
-        unsafe { self.inner.decommit(ptr.cast(), size) }
+        // SAFETY: We checked that `ptr` and `size` are in bounds of the allocation such that no
+        // other allocations can be affected and that `ptr` is aligned to the page size. As for
+        // this allocation, the only way to access it is by unsafely dererencing its pointer, where
+        // the user has the responsibility to make sure that that is valid.
+        unsafe { sys::decommit(ptr.cast(), size) }
     }
 
     /// [Prefaults] the given region of memory.
@@ -252,11 +280,10 @@ impl Allocation {
     /// [dangling]: Self::dangling
     /// [page size]: self#pages
     #[track_caller]
-    pub fn prefault(&self, ptr: *mut u8, size: usize) -> Result<()> {
+    pub fn prefault(&self, ptr: *mut u8, size: usize) -> Result {
         self.check_range(ptr, size);
 
-        // SAFETY: Enforced by the `check_range` call above.
-        unsafe { self.inner.prefault(ptr.cast(), size) }
+        sys::prefault(ptr.cast(), size)
     }
 
     #[inline(never)]
@@ -276,9 +303,14 @@ impl Allocation {
     }
 }
 
-impl fmt::Debug for Allocation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self.inner, f)
+impl Drop for Allocation {
+    fn drop(&mut self) {
+        if self.size != 0 {
+            // SAFETY: It is the responsibility of the user who is unsafely derefercing the
+            // allocation's pointer to ensure that those accesses don't happen after the allocation
+            // has been dropped. We know the pointer and its size is valid because we allocated it.
+            unsafe { sys::unreserve(self.ptr.as_ptr().cast(), self.size) };
+        }
     }
 }
 
@@ -290,7 +322,24 @@ impl fmt::Debug for Allocation {
 #[inline]
 #[must_use]
 pub fn page_size() -> usize {
-    sys::page_size()
+    static PAGE_SIZE: AtomicUsize = AtomicUsize::new(0);
+
+    #[cold]
+    #[inline(never)]
+    fn page_size_slow() -> usize {
+        let page_size = sys::page_size();
+        PAGE_SIZE.store(page_size, Ordering::Relaxed);
+
+        page_size
+    }
+
+    let cached = PAGE_SIZE.load(Ordering::Relaxed);
+
+    if cached != 0 {
+        cached
+    } else {
+        page_size_slow()
+    }
 }
 
 /// Returns the smallest value greater or equal to `val` that is a multiple of `alignment`. Returns
@@ -333,7 +382,7 @@ trait SizedTypeProperties: Sized {
 impl<T> SizedTypeProperties for T {}
 
 /// The type returned by the various [`Allocation`] methods.
-pub type Result<T, E = Error> = ::core::result::Result<T, E>;
+pub type Result<T = (), E = Error> = ::core::result::Result<T, E>;
 
 /// Represents an OS error that can be returned by the various [`Allocation`] methods.
 #[derive(Debug)]
@@ -365,161 +414,71 @@ mod unix {
     use super::Result;
     use core::{
         ffi::{c_char, c_int, c_void, CStr},
-        fmt,
-        ptr::{self, NonNull},
-        str,
-        sync::atomic::{AtomicUsize, Ordering},
+        fmt, ptr, str,
     };
 
-    #[derive(Debug)]
-    pub struct Allocation {
-        ptr: NonNull<c_void>,
-        size: usize,
+    pub fn reserve(size: usize) -> Result<*mut c_void> {
+        let prot = if cfg!(miri) {
+            // Miri doesn't support protections other than read/write.
+            libc::PROT_READ | libc::PROT_WRITE
+        } else {
+            libc::PROT_NONE
+        };
+
+        let flags = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS;
+
+        // SAFETY: Enforced by the fact that we are passing in a null pointer as the address, so
+        // that no existing mappings can be affected in any way.
+        let ptr = unsafe { libc::mmap(ptr::null_mut(), size, prot, flags, -1, 0) };
+
+        result(ptr != libc::MAP_FAILED)?;
+
+        Ok(ptr)
     }
 
-    // SAFETY: It is safe to send `Allocation::ptr` to another thread because the user would have
-    // to use unsafe code themself by dereferencing it.
-    unsafe impl Send for Allocation {}
-
-    // SAFETY: It is safe to share `Allocation::ptr` between threads because the user would have to
-    // use unsafe code themself by dereferencing it.
-    unsafe impl Sync for Allocation {}
-
-    impl Allocation {
-        pub fn new(size: usize) -> Result<Self> {
-            // Miri doesn't support protections other than read/write.
-            #[cfg(not(miri))]
-            let prot = libc::PROT_NONE;
-            #[cfg(miri)]
-            let prot = libc::PROT_READ | libc::PROT_WRITE;
-
-            let flags = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS;
-
-            // SAFETY: Enforced by the fact that we are passing in a null pointer as the address,
-            // so that no existing mappings can be affected in any way.
-            let ptr = unsafe { libc::mmap(ptr::null_mut(), size, prot, flags, -1, 0) };
-
-            result(ptr != libc::MAP_FAILED)?;
-
-            Ok(Allocation {
-                ptr: NonNull::new(ptr).unwrap(),
-                size,
-            })
-        }
-
-        #[inline]
-        pub const fn dangling(alignment: usize) -> Self {
-            assert!(alignment.is_power_of_two());
-
-            Allocation {
-                // SAFETY: We checked that `alignment` is a power of two, which means it must be
-                // non-zero.
-                ptr: unsafe { NonNull::new_unchecked(ptr::without_provenance_mut(alignment)) },
-                size: 0,
-            }
-        }
-
-        #[inline]
-        pub const fn ptr(&self) -> *mut c_void {
-            self.ptr.as_ptr()
-        }
-
-        #[inline]
-        pub const fn size(&self) -> usize {
-            self.size
-        }
-
-        #[cfg(not(miri))]
-        pub unsafe fn commit(&self, ptr: *mut c_void, size: usize) -> Result<()> {
-            // SAFETY: The caller must guarantee that `ptr` and `size` are in bounds of the
-            // allocation such that no other allocations can be affected and that `ptr` is aligned
-            // to the page size. As for this allocation, the only way to access it is by unsafely
-            // dererencing its pointer, where the user has the responsibility to make sure that
-            // that is valid.
-            result(unsafe { libc::mprotect(ptr, size, libc::PROT_READ | libc::PROT_WRITE) } == 0)
-        }
-
-        #[cfg(miri)]
-        pub unsafe fn commit(&self, _ptr: *mut c_void, _size: usize) -> Result<()> {
+    pub unsafe fn commit(ptr: *mut c_void, size: usize) -> Result {
+        if cfg!(miri) {
             // There is no equivalent to committing memory in the AM, so there's nothing for Miri
             // to check here. The worst that can happen is an unintentional segfault.
             Ok(())
+        } else {
+            result(unsafe { libc::mprotect(ptr, size, libc::PROT_READ | libc::PROT_WRITE) } == 0)
         }
+    }
 
-        #[cfg(not(miri))]
-        pub unsafe fn decommit(&self, ptr: *mut c_void, size: usize) -> Result<()> {
+    pub unsafe fn decommit(ptr: *mut c_void, size: usize) -> Result {
+        if cfg!(miri) {
+            // There is no equivalent to decommitting memory in the AM, so there's nothing for Miri
+            // to check here. The worst that can happen is an unintentional segfault.
+            Ok(())
+        } else {
             // God forbid this be one syscall :ferrisPensive:
-
-            // SAFETY: The caller must guarantee that `ptr` and `size` are in bounds of the
-            // allocation such that no other allocations can be affected and that `ptr` is aligned
-            // to the page size. As for this allocation, the only way to access it is by unsafely
-            // dererencing its pointer, where the user has the responsibility to make sure that
-            // that is valid.
             result(unsafe { libc::madvise(ptr, size, libc::MADV_DONTNEED) } == 0)?;
-
-            // SAFETY: Same as the previous.
             result(unsafe { libc::mprotect(ptr, size, libc::PROT_NONE) } == 0)?;
 
             Ok(())
         }
+    }
 
-        #[cfg(miri)]
-        pub unsafe fn decommit(&self, _ptr: *mut c_void, _size: usize) -> Result<()> {
-            // There is no equivalent to decommitting memory in the AM, so there's nothing for Miri
-            // to check here. The worst that can happen is an unintentional segfault.
+    pub fn prefault(ptr: *mut c_void, size: usize) -> Result {
+        if cfg!(miri) {
+            // Prefaulting is just an optimization hint and can't change program behavior.
             Ok(())
-        }
-
-        #[cfg(not(miri))]
-        pub unsafe fn prefault(&self, ptr: *mut c_void, size: usize) -> Result<()> {
-            // SAFETY: The caller must guarantee that `ptr` and `size` are in bounds of the
-            // allocation such that no other allocations can be affected and that `ptr` is aligned
-            // to the page size. This call is otherwise purely an optimization hint and can't
-            // change program behavior.
+        } else {
+            // SAFETY: Prefaulting is just an optimization hint and can't change program behavior.
             result(unsafe { libc::madvise(ptr, size, libc::MADV_WILLNEED) } == 0)
         }
-
-        #[cfg(miri)]
-        pub unsafe fn prefault(&self, _ptr: *mut c_void, _size: usize) -> Result<()> {
-            Ok(())
-        }
     }
 
-    impl Drop for Allocation {
-        fn drop(&mut self) {
-            if self.size != 0 {
-                // SAFETY: It is the responsibility of the user who is unsafely derefercing the
-                // allocation's pointer to ensure that those accesses don't happen after the
-                // allocation has been dropped. We know the pointer and its size is valid because
-                // we allocated it.
-                unsafe { libc::munmap(self.ptr(), self.size) };
-            }
-        }
+    pub unsafe fn unreserve(ptr: *mut c_void, size: usize) {
+        unsafe { libc::munmap(ptr, size) };
     }
 
-    #[inline]
     pub fn page_size() -> usize {
-        static PAGE_SIZE: AtomicUsize = AtomicUsize::new(0);
-
-        #[cold]
-        #[inline(never)]
-        fn page_size_slow() -> usize {
-            let page_size = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGE_SIZE) }).unwrap();
-            PAGE_SIZE.store(page_size, Ordering::Relaxed);
-
-            page_size
-        }
-
-        let cached = PAGE_SIZE.load(Ordering::Relaxed);
-
-        if cached != 0 {
-            cached
-        } else {
-            page_size_slow()
-        }
+        usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGE_SIZE) }).unwrap()
     }
 
-    fn result(condition: bool) -> Result<()> {
+    fn result(condition: bool) -> Result {
         if condition {
             Ok(())
         } else {
@@ -599,162 +558,82 @@ mod windows {
     #![allow(non_camel_case_types, non_snake_case, clippy::upper_case_acronyms)]
 
     use super::Result;
-    use core::{
-        ffi::c_void,
-        fmt, mem,
-        ptr::{self, NonNull},
-        str,
-        sync::atomic::{AtomicUsize, Ordering},
-    };
+    use core::{ffi::c_void, fmt, mem, ptr, str};
 
-    #[derive(Debug)]
-    pub struct Allocation {
-        ptr: NonNull<c_void>,
-        size: usize,
+    pub fn reserve(size: usize) -> Result<*mut c_void> {
+        let protect = if cfg!(miri) {
+            // Miri doesn't support protections other than read/write.
+            PAGE_READWRITE
+        } else {
+            PAGE_NOACCESS
+        };
+
+        // SAFETY: Enforced by the fact that we are passing in a null pointer as the address, so
+        // that no existing mappings can be affected in any way.
+        let ptr = unsafe { VirtualAlloc(ptr::null_mut(), size, MEM_RESERVE, protect) };
+
+        result(!ptr.is_null())?;
+
+        Ok(ptr)
     }
 
-    // SAFETY: It is safe to send `Allocation::ptr` to another thread because the user would have
-    // to use unsafe code themself by dereferencing it.
-    unsafe impl Send for Allocation {}
-
-    // SAFETY: It is safe to share `Allocation::ptr` between threads because the user would have to
-    // use unsafe code themself by dereferencing it.
-    unsafe impl Sync for Allocation {}
-
-    impl Allocation {
-        pub fn new(size: usize) -> Result<Self> {
-            // Miri doesn't support protections other than read/write.
-            #[cfg(not(miri))]
-            let protect = PAGE_NOACCESS;
-            #[cfg(miri)]
-            let protect = PAGE_READWRITE;
-
-            // SAFETY: Enforced by the fact that we are passing in a null pointer as the address,
-            // so that no existing mappings can be affected in any way.
-            let ptr = unsafe { VirtualAlloc(ptr::null_mut(), size, MEM_RESERVE, protect) };
-
-            result(!ptr.is_null())?;
-
-            Ok(Allocation {
-                ptr: NonNull::new(ptr).unwrap(),
-                size,
-            })
-        }
-
-        #[inline]
-        pub const fn dangling(alignment: usize) -> Self {
-            assert!(alignment.is_power_of_two());
-
-            Allocation {
-                // SAFETY: We checked that `alignment` is a power of two, which means it must be
-                // non-zero.
-                ptr: unsafe { NonNull::new_unchecked(ptr::without_provenance_mut(alignment)) },
-                size: 0,
-            }
-        }
-
-        #[inline]
-        pub const fn ptr(&self) -> *mut c_void {
-            self.ptr.as_ptr()
-        }
-
-        #[inline]
-        pub const fn size(&self) -> usize {
-            self.size
-        }
-
-        #[cfg(not(miri))]
-        pub unsafe fn commit(&self, ptr: *mut c_void, size: usize) -> Result<()> {
-            // SAFETY: The caller must guarantee that `ptr` and `size` are in bounds of the
-            // allocation such that no other allocations can be affected. As for this allocation,
-            // the only way to access it is by unsafely dererencing its pointer, where the user
-            // has the responsibility to make sure that that is valid.
-            result(!unsafe { VirtualAlloc(ptr, size, MEM_COMMIT, PAGE_READWRITE) }.is_null())
-        }
-
-        #[cfg(miri)]
-        pub unsafe fn commit(&self, _ptr: *mut c_void, _size: usize) -> Result<()> {
+    pub unsafe fn commit(ptr: *mut c_void, size: usize) -> Result {
+        if cfg!(miri) {
             // There is no equivalent to committing memory in the AM, so there's nothing for Miri
             // to check here. The worst that can happen is an unintentional segfault.
             Ok(())
+        } else {
+            result(!unsafe { VirtualAlloc(ptr, size, MEM_COMMIT, PAGE_READWRITE) }.is_null())
         }
+    }
 
-        #[cfg(not(miri))]
-        pub unsafe fn decommit(&self, ptr: *mut c_void, size: usize) -> Result<()> {
-            // SAFETY: The caller must guarantee that `ptr` and `size` are in bounds of the
-            // allocation such that no other allocations can be affected. As for this allocation,
-            // the only way to access it is by unsafely dererencing its pointer, where the user
-            // has the responsibility to make sure that that is valid.
-            result(unsafe { VirtualFree(ptr, size, MEM_DECOMMIT) } != 0)
-        }
-
-        #[cfg(miri)]
-        pub unsafe fn decommit(&self, _ptr: *mut c_void, _size: usize) -> Result<()> {
+    pub unsafe fn decommit(ptr: *mut c_void, size: usize) -> Result {
+        if cfg!(miri) {
             // There is no equivalent to decommitting memory in the AM, so there's nothing for Miri
             // to check here. The worst that can happen is an unintentional segfault.
             Ok(())
+        } else {
+            result(unsafe { VirtualFree(ptr, size, MEM_DECOMMIT) } != 0)
         }
+    }
 
-        #[cfg(all(not(miri), not(target_vendor = "win7")))]
-        pub unsafe fn prefault(&self, ptr: *mut c_void, size: usize) -> Result<()> {
+    #[cfg(not(target_vendor = "win7"))]
+    pub fn prefault(ptr: *mut c_void, size: usize) -> Result {
+        if cfg!(miri) {
+            // Prefaulting is just an optimization hint and can't change program behavior.
+            Ok(())
+        } else {
             let entry = WIN32_MEMORY_RANGE_ENTRY {
                 VirtualAddress: ptr,
                 NumberOfBytes: size,
             };
 
-            // SAFETY: The caller must guarantee that `ptr` and `size` are in bounds of the
-            // allocation such that no other allocations can be affected. We are targeting our own
-            // process, the pointer points to a valid and initialized memory location above, and
-            // the size of 1 is correct as there is only one entry. This call is otherwise purely
-            // an optimization hint and can't change program behavior.
+            // SAFETY: Prefaulting is just an optimization hint and can't change program behavior.
             result(unsafe { PrefetchVirtualMemory(GetCurrentProcess(), 1, &entry, 0) } != 0)
         }
-
-        #[cfg(any(miri, target_vendor = "win7"))]
-        pub unsafe fn prefault(&self, _ptr: *mut c_void, _size: usize) -> Result<()> {
-            Ok(())
-        }
     }
 
-    impl Drop for Allocation {
-        fn drop(&mut self) {
-            if self.size != 0 {
-                // SAFETY: It is the responsibility of the user who is unsafely derefercing the
-                // allocation's pointer to ensure that those accesses don't happen after the
-                // allocation has been dropped. We know that the pointer is valid because we
-                // allocated it, and we are passing in 0 as the size as required for `MEM_RELEASE`.
-                unsafe { VirtualFree(self.ptr(), 0, MEM_RELEASE) };
-            }
-        }
+    #[cfg(target_vendor = "win7")]
+    pub fn prefault(_ptr: *mut c_void, _size: usize) -> Result {
+        // Prefaulting is just an optimization hint and can't change program behavior.
+        Ok(())
     }
 
-    #[inline]
+    pub unsafe fn unreserve(ptr: *mut c_void, size: usize) {
+        unsafe { VirtualFree(ptr, 0, MEM_RELEASE) };
+    }
+
     pub fn page_size() -> usize {
-        static PAGE_SIZE: AtomicUsize = AtomicUsize::new(0);
+        // SAFETY: `SYSTEM_INFO` is composed only of primitive types.
+        let mut system_info = unsafe { mem::zeroed() };
 
-        #[cold]
-        #[inline(never)]
-        fn page_size_slow() -> usize {
-            // SAFETY: `SYSTEM_INFO` is composed only of primitive types.
-            let mut system_info = unsafe { mem::zeroed() };
-            // SAFETY: The pointer points to a valid memory location above.
-            unsafe { GetSystemInfo(&mut system_info) };
-            let page_size = usize::try_from(system_info.dwPageSize).unwrap();
-            PAGE_SIZE.store(page_size, Ordering::Relaxed);
+        // SAFETY: The pointer points to a valid memory location above.
+        unsafe { GetSystemInfo(&mut system_info) };
 
-            page_size
-        }
-
-        let cached = PAGE_SIZE.load(Ordering::Relaxed);
-
-        if cached != 0 {
-            cached
-        } else {
-            page_size_slow()
-        }
+        usize::try_from(system_info.dwPageSize).unwrap()
     }
 
-    fn result(condition: bool) -> Result<()> {
+    fn result(condition: bool) -> Result {
         if condition {
             Ok(())
         } else {
