@@ -998,7 +998,7 @@ impl<T> ExactSizeIterator for IntoIter<T> {
             self.end.addr().wrapping_sub(self.start.addr())
         } else {
             // SAFETY:
-            // * By our invariant, `self.end` is always greater or equal to `self.start`.
+            // * By our invariant, `self.end` is always greater than or equal to `self.start`.
             // * `start` and `end` were both created from the same object in `IntoIter::new`.
             // * `Vec::new` ensures that the allocation size doesn't exceed `isize::MAX` bytes.
             // * We know that the allocation doesn't wrap around the address space.

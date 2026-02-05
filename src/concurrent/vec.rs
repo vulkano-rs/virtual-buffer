@@ -234,8 +234,8 @@ impl<T> Vec<T> {
 
     /// Returns the number of elements in the vector.
     ///
-    /// This number may [`capacity`], doesn't corresopond to the number of initialized elements,
-    /// and also doesn't synchronize with setting the capacity.
+    /// This number may exceed [`capacity`], doesn't correspond to the number of initialized
+    /// elements, and also doesn't synchronize with setting the capacity.
     ///
     /// [`capacity`]: Self::capacity
     #[inline]
@@ -839,7 +839,7 @@ impl<T> Iter<'_, T> {
     #[inline]
     fn len(&self) -> usize {
         // SAFETY:
-        // * By our invariant, `self.end` is always greater or equal to `self.start`.
+        // * By our invariant, `self.end` is always greater than or equal to `self.start`.
         // * `start` and `end` were both created from the same object in `Iter::new`.
         // * `Vec::new` ensures that the allocation size doesn't exceed `isize::MAX` bytes.
         // * We know that the allocation doesn't wrap around the address space.
@@ -1025,7 +1025,7 @@ impl<T> IntoIter<T> {
     #[inline]
     fn len(&self) -> usize {
         // SAFETY:
-        // * By our invariant, `self.end` is always greater or equal to `self.start`.
+        // * By our invariant, `self.end` is always greater than or equal to `self.start`.
         // * `start` and `end` were both created from the same object in `IntoIter::new`.
         // * `Vec::new` ensures that the allocation size doesn't exceed `isize::MAX` bytes.
         // * We know that the allocation doesn't wrap around the address space.
@@ -1358,8 +1358,6 @@ impl<T> RawVec<T> {
                         // address. The constructor of `RawVec` must ensure that `T` is zeroable.
                         let slot = unsafe { &*self.as_ptr() };
 
-                        // SAFETY: We reserved an index by incrementing `self.inner.len`, which
-                        // means that no other threads can be calling `init` with the same index.
                         break (len, slot);
                     }
                     Err(new_len) => len = new_len,

@@ -18,7 +18,7 @@
 //!
 //! # Reserving
 //!
-//! Reserving memory involves allocating a range of virtual address space, such that other
+//! Reserving memory involves allocating a range of virtual address space such that other
 //! allocations within the same process can't reserve any of the same virtual address space for
 //! anything else. Memory that has been reserved has zero memory cost; however, it can't be
 //! accessed. In order to access any of the pages, you will have to commit them first.
@@ -344,8 +344,8 @@ pub fn page_size() -> usize {
     }
 }
 
-/// Returns the smallest value greater or equal to `val` that is a multiple of `alignment`. Returns
-/// zero on overflow.
+/// Returns the smallest value greater than or equal to `val` that is a multiple of `alignment`.
+/// Returns zero on overflow.
 ///
 /// You can use this together with [`page_size`] to align your regions for committing/decommitting.
 ///
@@ -358,7 +358,7 @@ pub const fn align_up(val: usize, alignment: usize) -> usize {
     val.wrapping_add(alignment - 1) & !(alignment - 1)
 }
 
-/// Returns the largest value smaller or equal to `val` that is a multiple of `alignment`.
+/// Returns the largest value smaller than or equal to `val` that is a multiple of `alignment`.
 ///
 /// You can use this together with [`page_size`] to align your regions for committing/decommitting.
 ///
@@ -389,7 +389,7 @@ macro_rules! assert_unsafe_precondition {
         // facilitating conditional compilation without `#[cfg]` and the problems that come with it.
         if cfg!(debug_assertions) {
             if !$condition {
-                crate::panic_nounwind(concat!("unsafe precondition(s) validated: ", $message));
+                crate::panic_nounwind(concat!("unsafe precondition(s) violated: ", $message));
             }
         }
     };
@@ -459,7 +459,7 @@ mod unix {
 
         let flags = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS;
 
-        // SAFETY: Enforced by the fact that we are passing in a null pointer as the address, so
+        // SAFETY: Enforced by the fact that we are passing in a null pointer as the address so
         // that no existing mappings can be affected in any way.
         let ptr = unsafe { libc::mmap(ptr::null_mut(), size, prot, flags, -1, 0) };
 
@@ -600,7 +600,7 @@ mod windows {
             PAGE_NOACCESS
         };
 
-        // SAFETY: Enforced by the fact that we are passing in a null pointer as the address, so
+        // SAFETY: Enforced by the fact that we are passing in a null pointer as the address so
         // that no existing mappings can be affected in any way.
         let ptr = unsafe { VirtualAlloc(ptr::null_mut(), size, MEM_RESERVE, protect) };
 
