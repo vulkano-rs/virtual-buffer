@@ -235,6 +235,10 @@ impl<T> Vec<T> {
     }
 
     /// Returns a pointer to the vector's buffer.
+    ///
+    /// This method is guaranteed to never materialize a reference to the underlying data. This,
+    /// coupled with the fact that the vector never reallocates, means that the returned pointer
+    /// stays valid until the vector is dropped.
     #[inline]
     #[must_use]
     pub fn as_ptr(&self) -> *const T {
@@ -242,6 +246,10 @@ impl<T> Vec<T> {
     }
 
     /// Returns a mutable pointer to the vector's buffer.
+    ///
+    /// This method is guaranteed to never materialize a reference to the underlying data. This,
+    /// coupled with the fact that the vector never reallocates, means that the returned pointer
+    /// stays valid until the vector is dropped.
     #[inline]
     #[must_use]
     pub fn as_mut_ptr(&mut self) -> *mut T {
