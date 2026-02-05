@@ -1,7 +1,7 @@
 //! A concurrent, in-place growable vector.
 
 use crate::{
-    align_up, page_size,
+    align_up, assert_unsafe_precondition, page_size,
     vec::{
         capacity_overflow, handle_error, GrowthStrategy, TryReserveError,
         TryReserveErrorKind::{AllocError, CapacityOverflow},
@@ -328,9 +328,14 @@ impl<T> Vec<T> {
     #[must_use]
     pub unsafe fn get_unchecked(&self, index: usize) -> &T {
         // SAFETY: The caller must ensure that the index is in bounds.
-        let slot = unsafe { self.inner.get_unchecked(index) };
+        let slot = unsafe { self.inner.as_capacity().get_unchecked(index) };
 
-        slot.occupied.load(Acquire);
+        let occupied = slot.occupied.load(Acquire);
+
+        assert_unsafe_precondition!(
+            occupied,
+            "`Vec::get_unchecked` requires that `index` refers to an initialized element",
+        );
 
         // SAFETY: The caller must ensure that the slot has been initialized. The `Acquire`
         // ordering above synchronizes with the `Release` ordering in `push`, making sure that the
@@ -350,7 +355,12 @@ impl<T> Vec<T> {
     #[must_use]
     pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut T {
         // SAFETY: The caller must ensure that the index is in bounds.
-        let slot = unsafe { self.inner.get_unchecked_mut(index) };
+        let slot = unsafe { self.inner.as_mut_capacity().get_unchecked_mut(index) };
+
+        assert_unsafe_precondition!(
+            *slot.occupied.get_mut(),
+            "`Vec::get_unchecked` requires that `index` refers to an initialized element",
+        );
 
         // SAFETY: The caller must ensure that the slot has been initialized.
         unsafe { slot.value_unchecked_mut() }

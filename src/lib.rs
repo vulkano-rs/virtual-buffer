@@ -382,6 +382,36 @@ trait SizedTypeProperties: Sized {
 
 impl<T> SizedTypeProperties for T {}
 
+macro_rules! assert_unsafe_precondition {
+    ($condition:expr, $message:expr $(,)?) => {
+        // The nesting is intentional. There is a special path in the compiler for `if false`,
+        // facilitating conditional compilation without `#[cfg]` and the problems that come with it.
+        if cfg!(debug_assertions) {
+            if !$condition {
+                crate::panic_nounwind(concat!("unsafe precondition(s) validated: ", $message));
+            }
+        }
+    };
+}
+use assert_unsafe_precondition;
+
+/// Polyfill for `core::panicking::panic_nounwind`.
+#[cold]
+#[inline(never)]
+const fn panic_nounwind(message: &'static str) -> ! {
+    // This is an `extern "C"` function because these are guaranteed to abort instead of unwinding
+    // as of Rust 1.81.0. They also get the `nounwind` LLVM attribute, so this approach optimizes
+    // better than the alternatives. We wrap it in a Rust function for the better calling
+    // convention for DST references and to make it clearer that this is not actually used from C.
+    #[allow(improper_ctypes_definitions)]
+    #[inline]
+    const extern "C" fn inner(message: &'static str) -> ! {
+        panic!("{}", message);
+    }
+
+    inner(message)
+}
+
 /// The type returned by the various [`Allocation`] methods.
 pub type Result<T = (), E = Error> = ::core::result::Result<T, E>;
 
