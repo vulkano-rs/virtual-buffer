@@ -182,9 +182,10 @@ impl Allocation {
     /// Returns the pointer to the beginning of the allocation.
     ///
     /// The returned pointer is always valid, including [dangling allocations], for reads and
-    /// writes of [`size()`] bytes in the sense that it can never lead to undefined behavior.
-    /// However, doing a read or write access to [pages] that have not been [committed] will result
-    /// in the process receiving SIGSEGV / STATUS_ACCESS_VIOLATION.
+    /// writes of [`size()`] bytes in the sense that it can never lead to undefined behavior,
+    /// assuming the [pages] have been [committed]. Doing a read or write access to pages that have
+    /// not been committed will result in the process receiving SIGSEGV / STATUS_ACCESS_VIOLATION.
+    /// This means in particular that the pointer stays valid until `self` is dropped.
     ///
     /// The pointer must not be accessed after `self` has been dropped.
     ///
