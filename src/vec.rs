@@ -45,7 +45,9 @@ impl VecBuilder {
 
     /// The built `Vec` will have the minimum capacity required for `capacity` elements.
     ///
-    /// The capacity can be greater due to the alignment to the page size.
+    /// The capacity can be greater due to the alignment to the [page size].
+    ///
+    /// [page size]: crate#pages
     #[inline]
     pub const fn capacity(&mut self, capacity: usize) -> &mut Self {
         self.capacity = capacity;
@@ -322,11 +324,12 @@ impl<T> Vec<T> {
     /// standard library vector.
     ///
     /// The new capacity is at least `self.len() + additional`. The [growth strategy] is ignored,
-    /// but the new capacity can still be greater due to the alignment to the page size. Does
+    /// but the new capacity can still be greater due to the alignment to the [page size]. Does
     /// nothing if the capacity is already sufficient.
     ///
     /// [reserving virtual memory]: crate#reserving
     /// [growth strategy]: GrowthStrategy
+    /// [page size]: crate#pages
     #[track_caller]
     pub fn reserve_exact(&mut self, additional: usize) {
         unsafe { self.inner.reserve_exact(additional, size_of::<T>()) };

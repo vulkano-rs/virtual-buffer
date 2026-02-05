@@ -40,7 +40,9 @@ impl VecBuilder {
 
     /// The built `RawVec` will have the minimum capacity required for `capacity` elements.
     ///
-    /// The capacity can be greater due to the alignment to the page size.
+    /// The capacity can be greater due to the alignment to the [page size].
+    ///
+    /// [page size]: crate#pages
     #[inline]
     pub const fn capacity(&mut self, capacity: usize) -> &mut Self {
         self.capacity = capacity;

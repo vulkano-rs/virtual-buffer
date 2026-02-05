@@ -20,7 +20,7 @@
 //!
 //! Reserving memory involves allocating a range of virtual address space, such that other
 //! allocations within the same process can't reserve any of the same virtual address space for
-//! anything else. Memory that has been reserved has zero memory cost, however, it can't be
+//! anything else. Memory that has been reserved has zero memory cost; however, it can't be
 //! accessed. In order to access any of the pages, you will have to commit them first.
 //!
 //! # Committing
@@ -60,7 +60,8 @@
 //!
 //! A page refers to the granularity at which the processor's Memory Management Unit operates and
 //! varies between processor architectures. As such, virtual memory operations can only affect
-//! ranges that are aligned to the *page size*.
+//! ranges that are aligned to the *page size*. You can retrieve the page size using [`page_size`],
+//! and you can align regions to the page size using [`align_up`] and [`align_down`].
 //!
 //! # Cargo features
 //!
@@ -315,6 +316,8 @@ impl Drop for Allocation {
 ///
 /// The value is cached globally and very fast to retrieve.
 ///
+/// You can align regions to the page size using [`align_up`] and [`align_down`].
+///
 /// [page size]: self#pages
 #[inline]
 #[must_use]
@@ -343,7 +346,7 @@ pub fn page_size() -> usize {
 /// Returns the smallest value greater or equal to `val` that is a multiple of `alignment`. Returns
 /// zero on overflow.
 ///
-/// You may use this together with [`page_size`] to align your regions for committing/decommitting.
+/// You can use this together with [`page_size`] to align your regions for committing/decommitting.
 ///
 /// `alignment` must be a power of two (which implies that it must be nonzero).
 #[inline(always)]
@@ -356,7 +359,7 @@ pub const fn align_up(val: usize, alignment: usize) -> usize {
 
 /// Returns the largest value smaller or equal to `val` that is a multiple of `alignment`.
 ///
-/// You may use this together with [`page_size`] to align your regions for committing/decommitting.
+/// You can use this together with [`page_size`] to align your regions for committing/decommitting.
 ///
 /// `alignment` must be a power of two (which implies that it must be nonzero).
 #[inline(always)]
