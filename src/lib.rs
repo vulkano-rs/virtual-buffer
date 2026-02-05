@@ -129,20 +129,24 @@ impl Allocation {
     ///
     /// # Panics
     ///
-    /// - Panics if `size` is not aligned to the [page size].
-    /// - Panics if `size` is zero.
+    /// Panics if `size` is not aligned to the [page size].
     ///
     /// [reserve]: self#reserving
-    /// [page size]: self#pages
     /// [committed]: self#committing
-    /// [unreserved]: self#unreserving
     /// [`commit`]: Self::commit
+    /// [unreserved]: self#unreserving
+    /// [page size]: self#pages
     #[track_caller]
     pub fn new(size: usize) -> Result<Self> {
-        assert!(is_aligned(size, page_size()));
-        assert_ne!(size, 0);
+        let page_size = page_size();
 
-        let ptr = sys::reserve(size)?;
+        assert!(is_aligned(size, page_size));
+
+        let ptr = if size == 0 {
+            ptr::without_provenance_mut(page_size)
+        } else {
+            sys::reserve(size)?
+        };
 
         Ok(Allocation {
             ptr: NonNull::new(ptr.cast()).unwrap(),
@@ -168,7 +172,7 @@ impl Allocation {
 
         Allocation {
             // SAFETY: We checked that `alignment` is a power of two, which means it must be
-            // non-zero.
+            // nonzero.
             ptr: unsafe { NonNull::new_unchecked(ptr::without_provenance_mut(alignment)) },
             size: 0,
         }
@@ -321,6 +325,7 @@ pub fn page_size() -> usize {
     #[inline(never)]
     fn page_size_slow() -> usize {
         let page_size = sys::page_size();
+        assert!(page_size.is_power_of_two());
         PAGE_SIZE.store(page_size, Ordering::Relaxed);
 
         page_size
@@ -340,7 +345,7 @@ pub fn page_size() -> usize {
 ///
 /// You may use this together with [`page_size`] to align your regions for committing/decommitting.
 ///
-/// `alignment` must be a power of two (which implies that it must be non-zero).
+/// `alignment` must be a power of two (which implies that it must be nonzero).
 #[inline(always)]
 #[must_use]
 pub const fn align_up(val: usize, alignment: usize) -> usize {
@@ -353,7 +358,7 @@ pub const fn align_up(val: usize, alignment: usize) -> usize {
 ///
 /// You may use this together with [`page_size`] to align your regions for committing/decommitting.
 ///
-/// `alignment` must be a power of two (which implies that it must be non-zero).
+/// `alignment` must be a power of two (which implies that it must be nonzero).
 #[inline(always)]
 #[must_use]
 pub const fn align_down(val: usize, alignment: usize) -> usize {
