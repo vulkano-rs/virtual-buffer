@@ -876,10 +876,10 @@ impl<T> Iter<'_, T> {
     #[inline]
     fn len(&self) -> usize {
         // SAFETY:
-        // * By our invariant, `self.end` is always greater than or equal to `self.start`.
-        // * `start` and `end` were both created from the same object in `Iter::new`.
-        // * `Vec::new` ensures that the allocation size doesn't exceed `isize::MAX` bytes.
-        // * We know that the allocation doesn't wrap around the address space.
+        // - By our invariant, `self.end` is always greater than or equal to `self.start`.
+        // - `start` and `end` were both created from the same object in `Iter::new`.
+        // - `Vec::new` ensures that the allocation size doesn't exceed `isize::MAX` bytes.
+        // - We know that the allocation doesn't wrap around the address space.
         unsafe { self.end().offset_from_unsigned(self.start()) }
     }
 
@@ -1062,10 +1062,10 @@ impl<T> IntoIter<T> {
     #[inline]
     fn len(&self) -> usize {
         // SAFETY:
-        // * By our invariant, `self.end` is always greater than or equal to `self.start`.
-        // * `start` and `end` were both created from the same object in `IntoIter::new`.
-        // * `Vec::new` ensures that the allocation size doesn't exceed `isize::MAX` bytes.
-        // * We know that the allocation doesn't wrap around the address space.
+        // - By our invariant, `self.end` is always greater than or equal to `self.start`.
+        // - `start` and `end` were both created from the same object in `IntoIter::new`.
+        // - `Vec::new` ensures that the allocation size doesn't exceed `isize::MAX` bytes.
+        // - We know that the allocation doesn't wrap around the address space.
         unsafe { self.end().offset_from_unsigned(self.start()) }
     }
 

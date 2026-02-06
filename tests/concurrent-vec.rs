@@ -1,6 +1,6 @@
 // This file was copied from [the Rust project], licensed under either of
-// * Apache License, Version 2.0 (LICENSE-APACHE or http://www.apache.org/licenses/LICENSE-2.0)
-// * MIT license (LICENSE-MIT or http://opensource.org/licenses/MIT)
+// - Apache License, Version 2.0 (LICENSE-APACHE or http://www.apache.org/licenses/LICENSE-2.0)
+// - MIT license (LICENSE-MIT or http://opensource.org/licenses/MIT)
 // at your option.
 //
 // The tests were adapted to the concurrent `Vec` methods, the mutable `Vec` methods, as well as
