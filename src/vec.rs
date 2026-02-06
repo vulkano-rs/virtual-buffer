@@ -659,19 +659,6 @@ impl<T> BorrowMut<[T]> for Vec<T> {
     }
 }
 
-impl<T: Clone> Clone for Vec<T> {
-    #[inline]
-    fn clone(&self) -> Self {
-        let mut vec = Vec::new(self.inner.max_capacity);
-
-        for elem in self {
-            vec.push(elem.clone());
-        }
-
-        vec
-    }
-}
-
 impl<T: fmt::Debug> fmt::Debug for Vec<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&**self, f)

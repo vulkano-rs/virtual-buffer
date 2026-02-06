@@ -271,7 +271,7 @@ fn test_extend() {
     let mut v = vec![];
     let mut w = vec![];
 
-    v.extend(w.clone());
+    v.extend(&w);
     assert_eq!(v, &[]);
 
     v.extend(0..3);
@@ -288,7 +288,7 @@ fn test_extend() {
 
     assert_eq!(v, w);
 
-    v.extend(w.clone()); // specializes to `append`
+    v.extend(&w); // specializes to `append`
     assert!(v.iter().eq(w.iter().chain(w.iter())));
 
     // Zero sized types
@@ -401,41 +401,6 @@ fn test_split_at_mut() {
     }
 
     assert_eq!(values, [2, 3, 5, 6, 7]);
-}
-
-#[test]
-fn test_clone() {
-    let v: Vec<i32> = vec![];
-    let w = vec![1, 2, 3];
-
-    assert_eq!(v, v.clone());
-
-    let z = w.clone();
-    assert_eq!(w, z);
-    // they should be disjoint in memory.
-    assert!(w.as_ptr() != z.as_ptr())
-}
-
-#[test]
-fn test_clone_from() {
-    let mut v = vec![];
-    let three: Vec<Box<_>> = vec![Box::new(1), Box::new(2), Box::new(3)];
-    let two: Vec<Box<_>> = vec![Box::new(4), Box::new(5)];
-    // zero, long
-    v.clone_from(&three);
-    assert_eq!(v, three);
-
-    // equal
-    v.clone_from(&three);
-    assert_eq!(v, three);
-
-    // long, short
-    v.clone_from(&two);
-    assert_eq!(v, two);
-
-    // short, long
-    v.clone_from(&three);
-    assert_eq!(v, three)
 }
 
 /*

@@ -485,15 +485,6 @@ impl<T> AsMut<Vec<T>> for Vec<T> {
     }
 }
 
-impl<T: Clone> Clone for Vec<T> {
-    #[inline]
-    fn clone(&self) -> Self {
-        Vec {
-            inner: self.inner.clone(),
-        }
-    }
-}
-
 impl<T: fmt::Debug> fmt::Debug for Vec<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&self.inner, f)
@@ -1861,20 +1852,6 @@ impl<T> BorrowMut<[T]> for RawVec<T> {
     #[inline]
     fn borrow_mut(&mut self) -> &mut [T] {
         self
-    }
-}
-
-impl<T: Clone> Clone for RawVec<T> {
-    #[inline]
-    fn clone(&self) -> Self {
-        let mut vec = unsafe { RawVec::new(self.inner.max_capacity) };
-
-        for elem in self {
-            let (_, slot) = vec.push_mut();
-            *slot = elem.clone();
-        }
-
-        vec
     }
 }
 
