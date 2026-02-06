@@ -1072,6 +1072,7 @@ impl Default for GrowthStrategy {
 impl GrowthStrategy {
     /// Returns the default growth strategy: exponential growth with a growth factor of 2.
     #[inline]
+    #[must_use]
     pub const fn new() -> Self {
         Self::Exponential {
             numerator: 2,

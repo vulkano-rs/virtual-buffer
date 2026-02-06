@@ -784,6 +784,7 @@ impl<T> Drop for Slot<T> {
 }
 
 impl<T: PartialEq<U>, U> PartialEq<Slot<U>> for Slot<T> {
+    #[allow(clippy::match_same_arms)]
     #[inline]
     fn eq(&self, other: &Slot<U>) -> bool {
         match (self.value(), other.value()) {

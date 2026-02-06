@@ -12,6 +12,15 @@
 //
 // [the Rust project]: https://github.com/rust-lang/rust/blob/f1586001ace26df7cafeb6534eaf76fb2c5513e5/library/alloc/tests/vec.rs
 
+#![allow(clippy::explicit_into_iter_loop)]
+#![allow(clippy::items_after_statements)]
+#![allow(clippy::manual_assert)]
+#![allow(clippy::many_single_char_names)]
+#![allow(clippy::ref_as_ptr)]
+#![allow(clippy::semicolon_if_nothing_returned)]
+#![allow(clippy::should_panic_without_expect)]
+#![allow(clippy::uninlined_format_args)]
+
 use std::{alloc::Layout, fmt::Debug, hint, mem, panic::catch_unwind, sync::Barrier, thread};
 use virtual_buffer::{
     align_down,

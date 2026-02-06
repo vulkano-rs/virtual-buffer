@@ -28,4 +28,7 @@ unsafe_op_in_unsafe_fn = "forbid"
 unused_unsafe = "allow"
 
 [lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+borrow_as_ptr = "allow"
+doc_markdown = "allow"
 inline_always = "allow"
