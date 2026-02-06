@@ -674,18 +674,21 @@ mod windows {
     }
 
     fn errno() -> i32 {
-        unsafe { GetLastError() as i32 }
+        unsafe { GetLastError() }.cast_signed()
     }
 
-    pub fn format_error(mut errnum: i32, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut buf = [0u16; 2048];
+    pub fn format_error(errnum: i32, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        const BUF_LEN: u32 = 2048;
+
+        let mut errnum = errnum.cast_unsigned();
+        let mut buf = [0u16; BUF_LEN as usize];
         let mut module = ptr::null_mut();
         let mut flags = 0;
 
         // NTSTATUS errors may be encoded as HRESULT, which may returned from
         // GetLastError. For more information about Windows error codes, see
         // `[MS-ERREF]`: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/0642cb2f-2075-4469-918c-4441e69c548a
-        if (errnum & FACILITY_NT_BIT as i32) != 0 {
+        if (errnum & FACILITY_NT_BIT) != 0 {
             // format according to https://support.microsoft.com/en-us/help/259693
             const NTDLL_DLL: &[u16] = &[
                 'N' as _, 'T' as _, 'D' as _, 'L' as _, 'L' as _, '.' as _, 'D' as _, 'L' as _,
@@ -695,7 +698,7 @@ mod windows {
             module = unsafe { GetModuleHandleW(NTDLL_DLL.as_ptr()) };
 
             if !module.is_null() {
-                errnum ^= FACILITY_NT_BIT as i32;
+                errnum ^= FACILITY_NT_BIT;
                 flags = FORMAT_MESSAGE_FROM_HMODULE;
             }
         }
@@ -704,10 +707,10 @@ mod windows {
             FormatMessageW(
                 flags | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
                 module,
-                errnum as u32,
+                errnum,
                 0,
                 buf.as_mut_ptr(),
-                buf.len() as u32,
+                BUF_LEN,
                 ptr::null(),
             ) as usize
         };
@@ -722,7 +725,7 @@ mod windows {
         }
 
         let mut output_len = 0;
-        let mut output = [0u8; 2048];
+        let mut output = [0u8; BUF_LEN as usize];
 
         for c in char::decode_utf16(buf[..res].iter().copied()) {
             let Ok(c) = c else {
