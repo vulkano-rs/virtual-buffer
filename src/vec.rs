@@ -319,8 +319,14 @@ impl<T> Vec<T> {
     /// calculated using the [growth strategy], the latter is used. Does nothing if the capacity is
     /// already sufficient.
     ///
+    /// # Panics
+    ///
+    /// - Panics if `self.len() + additional` would exceed `self.max_capacity()`.
+    /// - Panics if [committing] the new capacity fails.
+    ///
     /// [reserving virtual memory]: crate#reserving
     /// [growth strategy]: GrowthStrategy
+    /// [committing]: crate#committing
     #[track_caller]
     pub fn reserve(&mut self, additional: usize) {
         unsafe { self.inner.reserve(additional, size_of::<T>()) };
@@ -335,29 +341,60 @@ impl<T> Vec<T> {
     /// but the new capacity can still be greater due to the alignment to the [page size]. Does
     /// nothing if the capacity is already sufficient.
     ///
+    /// # Panics
+    ///
+    /// - Panics if `self.len() + additional` would exceed `self.max_capacity()`.
+    /// - Panics if [committing] the new capacity fails.
+    ///
     /// [reserving virtual memory]: crate#reserving
     /// [growth strategy]: GrowthStrategy
     /// [page size]: crate#pages
+    /// [committing]: crate#committing
     #[track_caller]
     pub fn reserve_exact(&mut self, additional: usize) {
         unsafe { self.inner.reserve_exact(additional, size_of::<T>()) };
     }
 
-    /// Reserves capacity for at least `additional` more elements.
+    /// Tries to reserve capacity for at least `additional` more elements, returning an error on
+    /// failure.
     ///
-    /// Like [`reserve`], except returning an error when [committing] the new capacity fails.
+    /// Not to be confused with [reserving virtual memory]; this method is named so as to match the
+    /// standard library vector.
     ///
-    /// [`reserve`]: Self::reserve
+    /// The new capacity is at least `self.len() + additional`. If this capacity is below the one
+    /// calculated using the [growth strategy], the latter is used. Does nothing if the capacity is
+    /// already sufficient.
+    ///
+    /// # Errors
+    ///
+    /// - Returns an error if `self.len() + additional` would exceed `self.max_capacity()`.
+    /// - Returns an error if [committing] the new capacity fails.
+    ///
+    /// [reserving virtual memory]: crate#reserving
+    /// [growth strategy]: GrowthStrategy
     /// [committing]: crate#committing
     pub fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
         unsafe { self.inner.try_reserve(additional, size_of::<T>()) }
     }
 
-    /// Reserves capacity for exactly `additional` more elements.
+    /// Tries to reserve the minimum capacity required for `additional` more elements, returning an
+    /// error on failure.
     ///
-    /// Like [`reserve_exact`], except returning an error when [committing] the new capacity fails.
+    /// Not to be confused with [reserving virtual memory]; this method is named so as to match the
+    /// standard library vector.
     ///
-    /// [`reserve_exact`]: Self::reserve
+    /// The new capacity is at least `self.len() + additional`. The [growth strategy] is ignored,
+    /// but the new capacity can still be greater due to the alignment to the [page size]. Does
+    /// nothing if the capacity is already sufficient.
+    ///
+    /// # Errors
+    ///
+    /// - Returns an error if `self.len() + additional` would exceed `self.max_capacity()`.
+    /// - Returns an error if [committing] the new capacity fails.
+    ///
+    /// [reserving virtual memory]: crate#reserving
+    /// [growth strategy]: GrowthStrategy
+    /// [page size]: crate#pages
     /// [committing]: crate#committing
     pub fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError> {
         unsafe { self.inner.try_reserve_exact(additional, size_of::<T>()) }
