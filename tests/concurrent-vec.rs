@@ -24,7 +24,7 @@
 use std::{alloc::Layout, fmt::Debug, hint, mem, panic::catch_unwind, sync::Barrier, thread};
 use virtual_buffer::{
     align_down,
-    concurrent::vec::{raw, IntoIter, Iter, RawVec, Vec},
+    concurrent::vec::{IntoIter, Iter, RawVec, Vec, raw},
     page_size,
     vec::GrowthStrategy,
 };

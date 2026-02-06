@@ -1,12 +1,12 @@
 //! A concurrent, in-place growable vector.
 
 use crate::{
-    align_up, assert_unsafe_precondition, page_size,
+    Allocation, SizedTypeProperties, align_up, assert_unsafe_precondition, page_size,
     vec::{
-        capacity_overflow, handle_error, GrowthStrategy, TryReserveError,
+        GrowthStrategy, TryReserveError,
         TryReserveErrorKind::{AllocError, CapacityOverflow},
+        capacity_overflow, handle_error,
     },
-    Allocation, SizedTypeProperties,
 };
 use core::{
     alloc::Layout,

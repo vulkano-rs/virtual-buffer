@@ -2,9 +2,8 @@
 
 use super::{RawVec, RawVecInner};
 use crate::{
-    is_aligned,
-    vec::{handle_error, GrowthStrategy, TryReserveError},
-    Allocation, SizedTypeProperties,
+    Allocation, SizedTypeProperties, is_aligned,
+    vec::{GrowthStrategy, TryReserveError, handle_error},
 };
 use core::{
     alloc::Layout, cmp, fmt, iter::FusedIterator, marker::PhantomData, mem::ManuallyDrop,

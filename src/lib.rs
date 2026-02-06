@@ -445,7 +445,7 @@ mod unix {
 
     use super::Result;
     use core::{
-        ffi::{c_char, c_int, c_void, CStr},
+        ffi::{CStr, c_char, c_int, c_void},
         fmt, ptr, str,
     };
 
@@ -547,7 +547,7 @@ mod unix {
         f.write_str(s)
     }
 
-    extern "C" {
+    unsafe extern "C" {
         #[cfg(not(target_os = "vxworks"))]
         #[cfg_attr(
             any(

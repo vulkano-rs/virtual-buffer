@@ -1,7 +1,7 @@
 //! An in-place growable vector.
 
 use self::TryReserveErrorKind::{AllocError, CapacityOverflow};
-use crate::{align_up, is_aligned, page_size, Allocation, Error, SizedTypeProperties};
+use crate::{Allocation, Error, SizedTypeProperties, align_up, is_aligned, page_size};
 use core::{
     alloc::Layout,
     borrow::{Borrow, BorrowMut},
