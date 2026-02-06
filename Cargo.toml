@@ -16,7 +16,7 @@ categories = ["concurrency", "data-structures", "memory-management", "no-std", "
 libc = { version = "0.2", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
-windows-targets = "0.52"
+windows-targets = "0.53"
 
 [features]
 default = ["std"]
