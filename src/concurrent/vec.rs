@@ -1270,6 +1270,8 @@ impl<T> RawVec<T> {
     /// This returns a slice with a length equal to the minimum of the vector's length and its
     /// capacity. As such, it is slightly less efficient than [`as_capacity`].
     ///
+    /// This does the same thing as [`RawVec::deref`].
+    ///
     /// [`as_capacity`]: Self::as_capacity
     #[inline]
     #[must_use]
@@ -1286,6 +1288,8 @@ impl<T> RawVec<T> {
     ///
     /// This returns a slice with a length equal to the minimum of the vector's length and its
     /// capacity. As such, it is slightly less efficient than [`as_mut_capacity`].
+    ///
+    /// This does the same thing as [`RawVec::deref_mut`].
     ///
     /// [`as_mut_capacity`]: Self::as_mut_capacity
     #[inline]
@@ -1883,6 +1887,7 @@ impl<T: fmt::Debug> fmt::Debug for RawVec<T> {
 impl<T> Deref for RawVec<T> {
     type Target = [T];
 
+    /// This does the same thing as [`RawVec::as_slice`].
     #[inline]
     fn deref(&self) -> &Self::Target {
         self.as_slice()
@@ -1890,6 +1895,7 @@ impl<T> Deref for RawVec<T> {
 }
 
 impl<T> DerefMut for RawVec<T> {
+    /// This does the same thing as [`RawVec::as_mut_slice`].
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.as_mut_slice()
