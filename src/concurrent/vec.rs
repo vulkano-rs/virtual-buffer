@@ -47,10 +47,7 @@ impl VecBuilder {
         VecBuilder {
             max_capacity,
             capacity: 0,
-            growth_strategy: GrowthStrategy::Exponential {
-                numerator: 2,
-                denominator: 1,
-            },
+            growth_strategy: GrowthStrategy::new(),
         }
     }
 
@@ -139,6 +136,9 @@ impl VecBuilder {
 /// a memory overhead equal to `align_of::<T>()`. You can avoid this overhead if you have a byte of
 /// memory to spare in your `T` or by packing the bit into an existing atomic field in `T` by using
 /// [`RawVec`].
+///
+/// If you don't specify a [growth strategy], exponential growth with a growth factor of 2 is used,
+/// which is the same strategy that the standard library `Vec` uses.
 pub struct Vec<T> {
     /// ```compile_fail,E0597
     /// let vec = virtual_buffer::concurrent::vec::Vec::<&'static str>::new(1);
@@ -1169,6 +1169,9 @@ impl<T> FusedIterator for IntoIter<T> {}
 /// provided because you should use the slice equivalent. This added flexibility comes at the cost
 /// of a bit of unsafety: constructing a `RawVec<T>`, you must ensure that `T` is zeroable, and
 /// pushing and accessing elements requires you to handle initialization of the element yourself.
+///
+/// If you don't specify a [growth strategy], exponential growth with a growth factor of 2 is used,
+/// which is the same strategy that the standard library `Vec` uses.
 pub struct RawVec<T> {
     inner: RawVecInner,
     marker: PhantomData<T>,
@@ -1645,10 +1648,7 @@ impl RawVecInner {
             capacity: AtomicUsize::new(0),
             len: AtomicUsize::new(0),
             max_capacity: 0,
-            growth_strategy: GrowthStrategy::Exponential {
-                numerator: 2,
-                denominator: 1,
-            },
+            growth_strategy: GrowthStrategy::new(),
             allocation,
         }
     }

@@ -35,10 +35,7 @@ impl VecBuilder {
         VecBuilder {
             max_capacity,
             capacity: 0,
-            growth_strategy: GrowthStrategy::Exponential {
-                numerator: 2,
-                denominator: 1,
-            },
+            growth_strategy: GrowthStrategy::new(),
             header_layout: Layout::new::<()>(),
         }
     }
@@ -137,9 +134,10 @@ impl VecBuilder {
 ///
 /// This type behaves similarly to the standard library `Vec` except that it is guaranteed to never
 /// reallocate. The vector grows similarly to the standard library vector, but instead of
-/// reallocating, it commits more memory. If you don't specify a [growth strategy], exponential
-/// growth with a growth factor of 2 is used, which is the same strategy that the standard library
-/// `Vec` uses.
+/// reallocating, it commits more memory.
+///
+/// If you don't specify a [growth strategy], exponential growth with a growth factor of 2 is used,
+/// which is the same strategy that the standard library `Vec` uses.
 ///
 /// [growth strategy]: GrowthStrategy
 pub struct Vec<T> {
@@ -494,10 +492,7 @@ impl VecInner {
             capacity: 0,
             len: 0,
             max_capacity: 0,
-            growth_strategy: GrowthStrategy::Exponential {
-                numerator: 2,
-                denominator: 1,
-            },
+            growth_strategy: GrowthStrategy::new(),
             allocation,
         }
     }
@@ -1085,14 +1080,20 @@ pub enum GrowthStrategy {
 impl Default for GrowthStrategy {
     #[inline]
     fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GrowthStrategy {
+    /// Returns the default growth strategy: exponential growth with a growth factor of 2.
+    #[inline]
+    pub const fn new() -> Self {
         Self::Exponential {
             numerator: 2,
             denominator: 1,
         }
     }
-}
 
-impl GrowthStrategy {
     #[track_caller]
     pub(crate) const fn validate(&self) {
         match *self {

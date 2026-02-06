@@ -30,10 +30,7 @@ impl VecBuilder {
         VecBuilder {
             max_capacity,
             capacity: 0,
-            growth_strategy: GrowthStrategy::Exponential {
-                numerator: 2,
-                denominator: 1,
-            },
+            growth_strategy: GrowthStrategy::new(),
             header_layout: Layout::new::<()>(),
         }
     }
