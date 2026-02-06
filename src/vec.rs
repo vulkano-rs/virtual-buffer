@@ -1051,8 +1051,6 @@ impl<T> FusedIterator for IntoIter<T> {}
 pub enum GrowthStrategy {
     /// The current capacity is multiplied by `numerator`, then divided by `denominator`.
     ///
-    /// If the new capacity equals the old capacity, `1` is added to the new capacity.
-    ///
     /// If the new capacity results in the last committed [page] having spare room for more
     /// elements, those elements are added to the new capacity.
     ///
@@ -1115,15 +1113,7 @@ impl GrowthStrategy {
             GrowthStrategy::Exponential {
                 numerator,
                 denominator,
-            } => {
-                let mut new_capacity = saturating_mul_div(old_capacity, numerator, denominator);
-
-                if new_capacity == old_capacity {
-                    new_capacity = old_capacity + 1;
-                }
-
-                new_capacity
-            }
+            } => saturating_mul_div(old_capacity, numerator, denominator),
             GrowthStrategy::Linear { elements } => old_capacity.saturating_add(elements),
         }
     }
